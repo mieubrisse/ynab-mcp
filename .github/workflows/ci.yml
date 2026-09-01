@@ -26,9 +26,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # Actions are pinned to commit SHAs, not mutable `@v4` tags. A major-version
+      # tag is a moving target: the code these steps run can change without any
+      # act on our part, which is the same thing we avoid by running the server
+      # from a local clone rather than a published package. Upgrading is then a
+      # deliberate edit. Re-resolve with:
+      #   git ls-remote https://github.com/actions/checkout refs/tags/vX.Y.Z
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm

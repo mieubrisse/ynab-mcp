@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// Regenerates src/methodology/content.ts from the sibling .md files.
+// Regenerates the sources that must be compiled in rather than read at runtime:
+//   - src/methodology/content.ts, from the sibling .md files
+//   - src/version.ts, from package.json
 //
 // The methodology documents used to be read from disk at runtime with
 // readFileSync. This server now runs with no filesystem access — the sandbox
@@ -10,12 +12,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const methodologyDir = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "src",
-  "methodology",
-);
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+const methodologyDir = join(repoRoot, "src", "methodology");
 
 // Keep in sync with the `topics` list in src/methodology/index.ts.
 const TOPIC_NAMES = [
@@ -49,6 +47,23 @@ sections.push("};");
 sections.push("");
 
 writeFileSync(join(methodologyDir, "content.ts"), sections.join("\n"));
+
+// The server reports its version over MCP. Reading package.json at runtime
+// would be a filesystem access, and this server is meant to run with none, so
+// the value is compiled in. `src/version.test.ts` fails if the two drift.
+const { version } = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf-8"));
+writeFileSync(
+  join(repoRoot, "src", "version.ts"),
+  [
+    "// Generated from package.json so the server needs no filesystem access at",
+    "// runtime. Re-run scripts/generate-inlined-sources.mjs after a version bump;",
+    "// src/version.test.ts fails if this drifts.",
+    "",
+    `export const SERVER_VERSION = ${JSON.stringify(version)};`,
+    "",
+  ].join("\n"),
+);
+
 process.stdout.write(
-  `Inlined ${TOPIC_NAMES.length} methodology topics into src/methodology/content.ts\n`,
+  `Inlined ${TOPIC_NAMES.length} methodology topics and version ${version}\n`,
 );

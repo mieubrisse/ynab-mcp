@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 
-import { createRequire } from "node:module";
-
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 import { createYnabMcpServer } from "./server.js";
-
-const require = createRequire(import.meta.url);
-const { version } = require("../package.json") as { version: string };
+// Compiled in rather than read from package.json at runtime: this server runs
+// with no filesystem access, and a require() of package.json is a file read.
+import { SERVER_VERSION } from "./version.js";
 
 function parseTtlSecondsEnv(
   name: string,
@@ -97,7 +95,7 @@ async function main(): Promise<void> {
   const { server } = createYnabMcpServer({
     accessToken,
     endpointUrl,
-    version,
+    version: SERVER_VERSION,
     readOnly,
     cacheTtlMs,
     pastMonthCacheTtlMs,
