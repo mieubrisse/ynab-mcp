@@ -551,7 +551,20 @@ export class UndoEngine {
       );
     }
 
-    return "Re-created deleted transaction.";
+    // Deliberately not phrased as a restoration. YNAB has no undelete, so this
+    // is a NEW transaction: different id, and no way to carry the original
+    // import_id, which means the bank-feed link is gone for good. Reporting it
+    // as "restored" invites the caller to tell the user the delete was
+    // reversed, when what exists is a lookalike that reconciliation will no
+    // longer match. The new id is named so the caller can actually follow it.
+    return (
+      "Could not restore the deleted transaction — YNAB has no undelete. " +
+      `Created a REPLACEMENT transaction instead, with a new id${
+        recreated ? ` (${recreated.id})` : ""
+      }. Its link to the imported bank record is permanently lost, so bank ` +
+      "reconciliation will no longer match it. Tell the user this was " +
+      "replaced rather than reversed."
+    );
   }
 
   private async applyScheduledTransactionUndo(

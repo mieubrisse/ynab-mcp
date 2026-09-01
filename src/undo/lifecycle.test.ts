@@ -130,7 +130,10 @@ describe("lifecycle: create -> update -> delete -> undo delete -> undo update ->
     const undoDelete = await engine.undoOperations([deleteEntry.id], false);
 
     expect(undoDelete.results[0].status).toBe("undone");
-    expect(undoDelete.results[0].message).toContain("Re-created");
+    // The message must not read as a restoration: YNAB has no undelete, so
+    // this is a replacement with a new id and no bank-feed link.
+    expect(undoDelete.results[0].message).toContain("REPLACEMENT");
+    expect(undoDelete.results[0].message).toMatch(/no undelete/i);
     expect(undoDelete.summary).toMatchObject({ undone: 1, errors: 0 });
 
     expect(mockClient.createTransactions).toHaveBeenCalledWith(budgetId, [
