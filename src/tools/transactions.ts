@@ -13,6 +13,7 @@ import {
   formatCurrency,
   formatTransactionForOutput,
   type Milliunits,
+  milliunitsToCurrency,
   snapshotTransaction,
 } from "../ynab/format.js";
 import type {
@@ -20,6 +21,7 @@ import type {
   TransactionSearchQuery,
   UpdateTransactionInput,
 } from "../ynab/types.js";
+import { assertSplitPartsSumToParent } from "./split-sum.js";
 
 /** Brand a YNAB API transaction's amounts as Milliunits for the format helpers. */
 function brandAmounts<
@@ -277,6 +279,16 @@ export function registerTransactionTools(
     },
     async ({ budget_id: budgetId, transactions }) => {
       try {
+        // Checked before anything is sent: YNAB would reject a non-summing
+        // split too, but without naming the numbers and at the cost of a
+        // request against the 200/hour limit.
+        for (const transaction of transactions) {
+          assertSplitPartsSumToParent(
+            transaction.amount,
+            transaction.subtransactions ?? [],
+          );
+        }
+
         const resolvedBudgetId =
           await context.ynabClient.resolveRealBudgetId(budgetId);
         return await withPendingOperation(
@@ -402,6 +414,7 @@ export function registerTransactionTools(
               }
             }
 
+            const results: Array<Record<string, unknown>> = [];
             const regularUpdates: (typeof transactions)[number][] = [];
             const refusedUpdates: (typeof transactions)[number][] = [];
 
@@ -421,9 +434,34 @@ export function registerTransactionTools(
 
               if (isSplit && touchesFrozenFields) {
                 refusedUpdates.push(update);
-              } else {
-                regularUpdates.push(update);
+                continue;
               }
+
+              // Converting a non-split transaction into a split: the parts must
+              // sum to whatever the amount will be after this update.
+              if (update.subtransactions !== undefined) {
+                const parentAmount =
+                  update.amount ??
+                  milliunitsToCurrency(asMilliunits(existing.amount));
+                try {
+                  assertSplitPartsSumToParent(
+                    parentAmount,
+                    update.subtransactions,
+                  );
+                } catch (error) {
+                  results.push({
+                    transaction_id: update.transaction_id,
+                    status: "refused",
+                    error: extractErrorMessage(
+                      error,
+                      "Split parts do not sum to the parent amount.",
+                    ),
+                  });
+                  continue;
+                }
+              }
+
+              regularUpdates.push(update);
             }
 
             const updated = regularUpdates.length
@@ -457,7 +495,6 @@ export function registerTransactionTools(
               targetEntityId: string;
             }> = [];
 
-            const results: Array<Record<string, unknown>> = [];
             let anyMutated = false;
 
             for (const update of regularUpdates) {

@@ -78,6 +78,8 @@ describe("split transaction creation", () => {
 
 describe("split subtransaction amount validation", () => {
   it("rejects a split where subtransaction amounts do not sum to parent", async () => {
+    // This is now caught locally, before any request is sent, and the message
+    // names both totals — YNAB's own rejection names neither.
     await expect(
       harness.callTool("create_transactions", {
         budget_id: "budget-1",
@@ -95,7 +97,15 @@ describe("split subtransaction amount validation", () => {
           },
         ],
       }),
-    ).rejects.toThrow(/subtransaction amounts must sum to parent amount/i);
+    ).rejects.toThrow(/sum/i);
+
+    // Nothing was written: the refusal happened before the request.
+    const after = (await harness.callTool("search_transactions", {
+      budget_id: "budget-1",
+      queries: [{ memo_contains: "Bad split" }],
+    })) as { result_sets: Array<{ count: number }> };
+
+    expect(after.result_sets[0].count).toBe(0);
   });
 });
 // The "split frozen fields on update", "subtransaction modification triggers
