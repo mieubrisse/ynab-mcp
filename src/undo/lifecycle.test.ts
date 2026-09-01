@@ -63,7 +63,7 @@ describe("lifecycle: create -> update -> delete -> undo delete -> undo update ->
 
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), "ynab-undo-lifecycle-"));
-    store = new UndoStore();
+    store = new UndoStore(tempDir);
     mockClient = createMockClient();
     engine = new UndoEngine(mockClient as never, store);
   });

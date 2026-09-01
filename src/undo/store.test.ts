@@ -1,12 +1,29 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createMockUndoEntry } from "../test-utils.js";
 import { UndoStore } from "./store.js";
 
+let dataDir: string;
 let store: UndoStore;
 
-beforeEach(() => {
-  store = new UndoStore();
+beforeEach(async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "undo-store-test-"));
+  store = new UndoStore(dataDir);
+});
+
+afterEach(async () => {
+  await rm(dataDir, { recursive: true, force: true });
 });
 
 const BUDGET_ID = "budget-1";
@@ -78,7 +95,7 @@ describe("appendEntries and persistence", () => {
   });
 
   it("caps total entries at maxEntriesPerBudget", async () => {
-    const smallStore = new UndoStore(3);
+    const smallStore = new UndoStore(dataDir, 3);
 
     for (let i = 0; i < 5; i++) {
       await smallStore.appendEntries(BUDGET_ID, [entry(`budget-1::${i}::e`)]);
@@ -166,17 +183,12 @@ describe("listEntries", () => {
     expect(result).toEqual([]);
   });
 
-  it("returns early for an empty append without recording anything", async () => {
-    const cleanupStore = new UndoStore();
+  it("returns early for empty append without writing history files", async () => {
+    const cleanupStore = new UndoStore(dataDir);
     await cleanupStore.appendEntries(BUDGET_ID, []);
 
-    const { entries, total } = await cleanupStore.listEntries(BUDGET_ID, {
-      limit: 100,
-      includeUndone: true,
-    });
-
-    expect(entries).toEqual([]);
-    expect(total).toBe(0);
+    const historyDir = join(dataDir, "history");
+    await expect(readdir(historyDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
 
@@ -267,11 +279,20 @@ describe("resolveMappedId", () => {
   });
 
   it("handles cycles safely without infinite loop", async () => {
-    // Build the cycle through the public API: a -> b, then b -> a.
-    await store.updateIdMappings(BUDGET_ID, "id-a", "id-b");
-    await store.updateIdMappings(BUDGET_ID, "id-b", "id-a");
+    // Manually create a cycle by writing raw data
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const historyDir = join(dataDir, "history");
+    await mkdir(historyDir, { recursive: true });
+    const filePath = join(historyDir, `${encodeURIComponent(BUDGET_ID)}.json`);
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        entries: [],
+        id_mappings: { "id-a": "id-b", "id-b": "id-a" },
+      }),
+    );
 
-    // Should terminate without hanging.
+    // Should terminate without hanging
     const result = await store.resolveMappedId(BUDGET_ID, "id-a");
     expect(["id-a", "id-b"]).toContain(result);
   });
@@ -323,42 +344,84 @@ describe("error handling", () => {
     expect(result).toEqual([]);
   });
 
-  // The "recovers from corrupt JSON by quarantining the file" test was removed
-  // here. Undo history is held in memory now, so there is no file to corrupt
-  // and no quarantine path to exercise.
+  it("recovers from corrupt JSON by quarantining the file", async () => {
+    const { mkdir } = await import("node:fs/promises");
+    const historyDir = join(dataDir, "history");
+    await mkdir(historyDir, { recursive: true });
+    const filePath = join(historyDir, `${encodeURIComponent(BUDGET_ID)}.json`);
+    await writeFile(filePath, "not valid json{{{");
+
+    const { entries: result } = await store.listEntries(BUDGET_ID, {
+      limit: 100,
+      includeUndone: true,
+    });
+
+    expect(result).toEqual([]);
+
+    const files = await readdir(historyDir);
+    expect(files).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(
+          new RegExp(`^${encodeURIComponent(BUDGET_ID)}\\.json\\.corrupt-`),
+        ),
+      ]),
+    );
+  });
 });
 
 describe("housekeeping", () => {
   it("expires pending operations older than the age cutoff", async () => {
-    // Age the marker by moving the clock rather than backdating a file: the
-    // store no longer reads timestamps written by anyone else.
-    vi.useFakeTimers();
-    try {
-      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
-      const ancient = await store.markPending(BUDGET_ID, "ancient operation");
+    const fresh = await store.markPending(BUDGET_ID, "fresh operation");
 
-      vi.setSystemTime(new Date("2026-01-02T01:00:00Z"));
-      const yesterday = await store.markPending(
-        BUDGET_ID,
-        "yesterday's operation",
-      );
+    // Inject stale pending ops directly into the history file: one from
+    // yesterday (kept — the cutoff errs long) and one from last week
+    // (expired).
+    const filePath = join(dataDir, "history", `${BUDGET_ID}.json`);
+    const raw = JSON.parse(await readFile(filePath, "utf8"));
+    raw.pending_operations.push(
+      {
+        id: "yesterday-op",
+        budget_id: BUDGET_ID,
+        timestamp: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+        description: "yesterday's operation",
+      },
+      {
+        id: "ancient-op",
+        budget_id: BUDGET_ID,
+        timestamp: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+        description: "ancient operation",
+      },
+    );
+    await writeFile(filePath, JSON.stringify(raw), "utf8");
 
-      // Eight days after the first marker, one has aged out and one has not.
-      vi.setSystemTime(new Date("2026-01-09T00:00:00Z"));
-      const pending = await store.getPendingOperations(BUDGET_ID);
-
-      expect(pending.map((op) => op.id)).toContain(yesterday);
-      expect(pending.map((op) => op.id)).not.toContain(ancient);
-    } finally {
-      vi.useRealTimers();
-    }
+    const pending = await store.getPendingOperations(BUDGET_ID);
+    expect(pending.map((op) => op.id)).toEqual([fresh, "yesterday-op"]);
   });
 
-  // The "keeps pending operations with unparseable timestamps" test was removed
-  // here. Every timestamp is now produced inside this process, so a malformed
-  // one is unreachable by construction. The defensive guard in
-  // isExpiredPendingOperation is kept anyway, since dropping a marker silently
-  // is worse than showing a malformed one.
+  it("keeps pending operations with unparseable timestamps", async () => {
+    const filePath = join(dataDir, "history", `${BUDGET_ID}.json`);
+    await mkdir(join(dataDir, "history"), { recursive: true });
+    await writeFile(
+      filePath,
+      JSON.stringify({
+        entries: [],
+        id_mappings: {},
+        pending_operations: [
+          {
+            id: "bad-ts",
+            budget_id: BUDGET_ID,
+            timestamp: "not-a-date",
+            description: "corrupt timestamp",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    // A malformed marker still warns about an unreconciled write.
+    const pending = await store.getPendingOperations(BUDGET_ID);
+    expect(pending.map((op) => op.id)).toEqual(["bad-ts"]);
+  });
 
   it("generates distinct pending ids in the same millisecond", async () => {
     const first = await store.markPending(BUDGET_ID, "op one");
@@ -370,6 +433,34 @@ describe("housekeeping", () => {
     expect(remaining.map((op) => op.id)).toEqual([second]);
   });
 
-  // The ".tmp and .corrupt-* cleanup" test was removed here for the same
-  // reason: there are no history files to leave behind.
+  it("cleans up aged .tmp and .corrupt-* files but keeps recent ones", async () => {
+    const historyDir = join(dataDir, "history");
+    await mkdir(historyDir, { recursive: true });
+
+    const oldTmp = join(historyDir, "b.json.123.456.tmp");
+    const freshTmp = join(historyDir, "b.json.123.789.tmp");
+    const oldCorrupt = join(historyDir, "b.json.corrupt-1-2");
+    const freshCorrupt = join(historyDir, "b.json.corrupt-3-4");
+    for (const file of [oldTmp, freshTmp, oldCorrupt, freshCorrupt]) {
+      await writeFile(file, "{}", "utf8");
+    }
+    const twoHoursAgo = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+    const eightDaysAgo = (Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000;
+    await utimes(oldTmp, twoHoursAgo, twoHoursAgo);
+    await utimes(oldCorrupt, eightDaysAgo, eightDaysAgo);
+
+    // Housekeeping runs lazily on first store use; a fresh store instance
+    // triggers it.
+    const freshStore = new UndoStore(dataDir);
+    await freshStore.getPendingOperations(BUDGET_ID);
+    await vi.waitFor(async () => {
+      const names = await readdir(historyDir);
+      expect(names).not.toContain("b.json.123.456.tmp");
+      expect(names).not.toContain("b.json.corrupt-1-2");
+    });
+
+    const names = await readdir(historyDir);
+    expect(names).toContain("b.json.123.789.tmp");
+    expect(names).toContain("b.json.corrupt-3-4");
+  });
 });

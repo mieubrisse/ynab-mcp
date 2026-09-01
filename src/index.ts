@@ -76,6 +76,22 @@ async function main(): Promise<void> {
 
   const endpointUrl = process.env.YNAB_API_URL;
 
+  // Where undo history is kept. Deliberately REQUIRED with no default: the
+  // obvious fallback is a shared path under the home directory, and a shared
+  // undo store lets one agent's undo history be read and rewritten by another
+  // agent working a different task. The launcher supplies a directory unique to
+  // the calling session, and the Deno sandbox grants write access to that
+  // directory and nothing else.
+  const dataDirectory = process.env.YNAB_MCP_DATA_DIR;
+  if (!dataDirectory) {
+    throw new Error(
+      "YNAB_MCP_DATA_DIR is not set. It must name a directory private to this " +
+        "session, where undo history is stored. There is no default on purpose: " +
+        "a shared location would let concurrent sessions overwrite each other's " +
+        "undo history.",
+    );
+  }
+
   const readOnly =
     parseBooleanEnv("YNAB_READ_ONLY", process.env.YNAB_READ_ONLY) ?? false;
 
@@ -95,6 +111,7 @@ async function main(): Promise<void> {
   const { server } = createYnabMcpServer({
     accessToken,
     endpointUrl,
+    dataDirectory,
     version: SERVER_VERSION,
     readOnly,
     cacheTtlMs,

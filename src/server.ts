@@ -12,6 +12,7 @@ import { extractErrorMessage } from "./ynab/errors.js";
 
 export interface CreateServerOptions {
   accessToken: string;
+  dataDirectory: string;
   endpointUrl?: string;
   version?: string;
   readOnly?: boolean;
@@ -33,7 +34,10 @@ export function createYnabMcpServer(options: CreateServerOptions): {
     timeoutMs: options.timeoutMs,
     maxRetries: options.maxRetries,
   });
-  const undoStore = new UndoStore(options.undoHistoryLimit);
+  const undoStore = new UndoStore(
+    options.dataDirectory,
+    options.undoHistoryLimit,
+  );
   const undoEngine = new UndoEngine(ynabClient, undoStore);
 
   // A split-deletion workaround transaction whose cleanup delete failed
@@ -75,14 +79,14 @@ export function createYnabMcpServer(options: CreateServerOptions): {
         "spending analysis (aggregation, time series, income vs expense, " +
         "recurring-charge and anomaly detection); the money-movement audit feed " +
         "showing how budgeted amounts changed; a one-call budget health " +
-        "snapshot; and in-session undo for writes. Tool inputs always take " +
+        "snapshot; and undo for writes. Tool inputs always take " +
         "plain currency units, never milliunits, and outputs report them the " +
         "same way (a few analysis totals add raw milliunits alongside). Every " +
-        "write returns undo_history_ids usable with undo_operations, but that " +
-        "history lives in memory and does NOT survive a server restart, and " +
-        "an undo that would have to change an existing split's category or " +
-        "subtransactions is refused rather than performed — YNAB offers no " +
-        "in-place route, and the destructive one severs the bank-import link. " +
+        "write returns undo_history_ids usable with undo_operations, and that " +
+        "history persists across restarts of this server. One case is refused " +
+        "rather than performed: an undo that would have to change an existing " +
+        "split's category or subtransactions, because YNAB offers no in-place " +
+        "route and the destructive one severs the bank-import link. " +
         "Do not promise an undo you have not checked is available. Read the ynab://knowledge/* resources for YNAB " +
         "methodology (credit cards, targets, overspending, reconciliation) " +
         "before giving budgeting advice. The YNAB API allows 200 requests/hour; " +
