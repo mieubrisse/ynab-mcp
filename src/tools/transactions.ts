@@ -599,8 +599,14 @@ export function registerTransactionTools(
     {
       title: "Delete Transactions",
       description:
-        "Delete one or more transactions. Each deletion is undoable by re-creating " +
-        "the transaction. Costs one YNAB API call per transaction against the " +
+        "Delete one or more transactions. YNAB has no undelete: undoing a " +
+        "deletion here CREATES A NEW TRANSACTION rather than restoring the " +
+        "original. The replacement has a different id and cannot carry the " +
+        "original import_id, so its link to the imported bank record is lost " +
+        "permanently and reconciliation against the bank feed will no longer " +
+        "match it. Treat deletion as irreversible and confirm with the user " +
+        "first — do not call this to fix a mistake that an ordinary update " +
+        "could correct. Costs one YNAB API call per transaction against the " +
         "200/hour rate limit.",
       annotations: {
         readOnlyHint: false,
