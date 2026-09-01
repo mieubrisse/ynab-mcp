@@ -1,11 +1,25 @@
 name: CI
 
+# This workflow deliberately holds no credentials. The tests stub the HTTP
+# layer, so a green build never depends on access to a real budget. Do not add
+# a YNAB token, an npm token, or any other secret here.
+#
+# Note the trigger is `pull_request`, NOT `pull_request_target`. That matters:
+# `pull_request_target` would run untrusted pull-request code with the base
+# repository's secrets and a write-capable token, which is the standard way
+# fork CI gets exploited.
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_call:
+
+# Least privilege. Without this block the token inherits the repository
+# default, which can be read/write; nothing here needs to write anything.
+permissions:
+  contents: read
 
 jobs:
   ci:
@@ -19,7 +33,13 @@ jobs:
           node-version: 20
           cache: npm
 
-      - run: npm ci
+      # --ignore-scripts: dependency install-lifecycle scripts are arbitrary
+      # code from ~150 packages, and running them buys nothing here. This
+      # project's only such script is `prepare -> lefthook install`, which
+      # installs local git hooks and is meaningless on a runner. The audit that
+      # led to this fork installed with --ignore-scripts for the same reason;
+      # CI should not be held to a weaker standard than the audit was.
+      - run: npm ci --ignore-scripts
 
       - name: Typecheck
         run: npm run typecheck
