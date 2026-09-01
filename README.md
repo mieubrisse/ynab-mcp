@@ -2,6 +2,26 @@
 
 An MCP server for YNAB with batch operations, deterministic analysis tools, and robust undo support.
 
+> **This is a fork.** It diverges from upstream `Maronato/ynab-mcp` in three
+> ways that matter, all driven by running against a real budget:
+>
+> - **No filesystem access.** Undo history is held in memory and the
+>   methodology documents are compiled in, so the server needs no read, write
+>   or home-directory access. It runs with network access to `api.ynab.com`
+>   and nothing else, which is what bounds the blast radius of every
+>   dependency in the tree. The trade: undo history does not survive a
+>   restart.
+> - **Editing a split's category or subtransactions is refused.** YNAB has no
+>   way to do it in place; the only mechanism is delete-and-recreate, which
+>   cannot be undone, changes the transaction id, and severs the link to the
+>   imported bank record. That is a deletion, and it should not happen inside
+>   a routine batch update.
+> - **Split parts are checked locally** before a request is spent, and the
+>   error names both totals.
+>
+> The token variable is `YNAB_ACCESS_TOKEN` here, not `YNAB_API_TOKEN`.
+
+
 > [!NOTE]
 > **AI Disclosure:** This project was built with Claude Code and Cursor. It works and is tested, but the code is largely clanker-made.
 
@@ -29,14 +49,14 @@ An MCP server for YNAB with batch operations, deterministic analysis tools, and 
 Run directly with `npx`:
 
 ```bash
-YNAB_API_TOKEN=your-token npx @maro-org/ynab-mcp
+YNAB_ACCESS_TOKEN=your-token npx @maro-org/ynab-mcp
 ```
 
 Or install globally:
 
 ```bash
 npm install -g @maro-org/ynab-mcp
-YNAB_API_TOKEN=your-token ynab-mcp
+YNAB_ACCESS_TOKEN=your-token ynab-mcp
 ```
 
 ### MCP Client Configuration
@@ -50,7 +70,7 @@ Add the server to your MCP client config. For example, in Claude Desktop (`claud
       "command": "npx",
       "args": ["-y", "@maro-org/ynab-mcp"],
       "env": {
-        "YNAB_API_TOKEN": "your-token"
+        "YNAB_ACCESS_TOKEN": "your-token"
       }
     }
   }
@@ -65,9 +85,8 @@ All configuration is done through environment variables.
 
 | Variable                    | Description                                                        | Default       |
 | --------------------------- | ------------------------------------------------------------------ | ------------- |
-| `YNAB_API_TOKEN`            | YNAB personal access token                                         | **required**  |
+| `YNAB_ACCESS_TOKEN`            | YNAB personal access token                                         | **required**  |
 | `YNAB_API_URL`              | Override the YNAB API base URL                                     | YNAB default  |
-| `YNAB_MCP_DATA_DIR`         | Directory for undo history storage                                 | `~/.ynab-mcp` |
 | `YNAB_READ_ONLY`            | Hide and disable all write operations (`true`/`false`/`1`/`0`)     | `false`       |
 | `YNAB_CACHE_TTL`            | Cache TTL in seconds for live data                                 | `3600`        |
 | `YNAB_PAST_MONTH_CACHE_TTL` | Cache TTL in seconds for completed past months                     | `86400`       |
@@ -174,7 +193,7 @@ Knowledge base resources for YNAB methodology. Workflow prompts reference these 
 
 **`budget_id`** — Most tools accept an optional `budget_id`. Omit it or pass `"last-used"` to target the most recently accessed budget.
 
-**Undo** — Every write operation records an undo entry. Use `list_undo_history` and `undo_operations` to review or revert changes. The most recent 2000 entries per budget are kept (tunable via `YNAB_UNDO_HISTORY_LIMIT`).
+**Undo** — Every write operation records an undo entry. Use `list_undo_history` and `undo_operations` to review or revert changes. The most recent 2000 entries per budget are kept (tunable via `YNAB_UNDO_HISTORY_LIMIT`). History lives in memory only, so it is scoped to a single server process and does not survive a restart.
 
 **Read-only mode** — Set `YNAB_READ_ONLY=true` to hide and block all write operations. Useful for exploring your budget safely or restricting an MCP client to read-only access.
 

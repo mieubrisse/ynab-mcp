@@ -78,6 +78,8 @@ describe("split transaction creation", () => {
 
 describe("split subtransaction amount validation", () => {
   it("rejects a split where subtransaction amounts do not sum to parent", async () => {
+    // This is now caught locally, before any request is sent, and the message
+    // names both totals — YNAB's own rejection names neither.
     await expect(
       harness.callTool("create_transactions", {
         budget_id: "budget-1",
@@ -95,135 +97,22 @@ describe("split subtransaction amount validation", () => {
           },
         ],
       }),
-    ).rejects.toThrow(/subtransaction amounts must sum to parent amount/i);
+    ).rejects.toThrow(/sum/i);
+
+    // Nothing was written: the refusal happened before the request.
+    const after = (await harness.callTool("search_transactions", {
+      budget_id: "budget-1",
+      queries: [{ memo_contains: "Bad split" }],
+    })) as { result_sets: Array<{ count: number }> };
+
+    expect(after.result_sets[0].count).toBe(0);
   });
 });
-
-describe("split frozen fields on update", () => {
-  it("updates category_id on a split via replace (new ID)", async () => {
-    // Create a split
-    const created = (await harness.callTool("create_transactions", {
-      budget_id: "budget-1",
-      transactions: [
-        {
-          account_id: "acct-checking",
-          date: dateStr(0, 15),
-          amount: -80.0,
-          memo: "Frozen field test",
-          subtransactions: [
-            { amount: -50.0, category_id: "cat-groceries" },
-            { amount: -30.0, category_id: "cat-dining" },
-          ],
-        },
-      ],
-    })) as {
-      transactions: Array<{ id: string }>;
-    };
-
-    const originalId = created.transactions[0].id;
-
-    // Update category_id on the parent -- triggers replace
-    const updated = (await harness.callTool("update_transactions", {
-      budget_id: "budget-1",
-      transactions: [
-        {
-          transaction_id: originalId,
-          category_id: "cat-transport",
-        },
-      ],
-    })) as {
-      results: Array<{
-        status: string;
-        transaction_id: string;
-        current_transaction_id: string;
-        transaction: {
-          category_id: string;
-          category_name: string;
-          amount: number;
-          memo: string;
-        };
-      }>;
-    };
-
-    expect(updated.results[0].status).toBe("updated");
-    // Replace gives a new ID
-    const newId = updated.results[0].current_transaction_id;
-    expect(newId).toBeDefined();
-    expect(newId).not.toBe(originalId);
-    // Verify the category actually changed
-    expect(updated.results[0].transaction.category_id).toBe("cat-transport");
-    expect(updated.results[0].transaction.category_name).toBe("Transportation");
-    // Other fields should be preserved
-    expect(updated.results[0].transaction.amount).toBe(-80.0);
-    expect(updated.results[0].transaction.memo).toBe("Frozen field test");
-  });
-});
-
-describe("subtransaction modification triggers replace", () => {
-  it("updates subtransactions array via replace", async () => {
-    // Create a split
-    const created = (await harness.callTool("create_transactions", {
-      budget_id: "budget-1",
-      transactions: [
-        {
-          account_id: "acct-checking",
-          date: dateStr(0, 15),
-          amount: -90.0,
-          memo: "Sub modify test",
-          subtransactions: [
-            { amount: -50.0, category_id: "cat-groceries" },
-            { amount: -40.0, category_id: "cat-dining" },
-          ],
-        },
-      ],
-    })) as {
-      transactions: Array<{ id: string }>;
-    };
-
-    const originalId = created.transactions[0].id;
-
-    // Update with new subtransactions
-    const updated = (await harness.callTool("update_transactions", {
-      budget_id: "budget-1",
-      transactions: [
-        {
-          transaction_id: originalId,
-          subtransactions: [
-            { amount: -30.0, category_id: "cat-transport" },
-            { amount: -60.0, category_id: "cat-utilities" },
-          ],
-        },
-      ],
-    })) as {
-      results: Array<{
-        status: string;
-        current_transaction_id: string;
-        transaction: {
-          subtransactions: Array<{
-            amount: number;
-            category_name: string;
-          }>;
-        };
-      }>;
-    };
-
-    expect(updated.results[0].status).toBe("updated");
-    // New ID due to replace
-    expect(updated.results[0].current_transaction_id).not.toBe(originalId);
-
-    // Verify the new subtransactions — both amounts and categories changed
-    const newTx = updated.results[0].transaction;
-    expect(newTx.subtransactions).toHaveLength(2);
-    const subAmounts = newTx.subtransactions
-      .map((s) => s.amount)
-      .sort((a, b) => a - b);
-    expect(subAmounts).toEqual([-60.0, -30.0]);
-    const subCategoryNames = newTx.subtransactions
-      .map((s) => s.category_name)
-      .sort();
-    expect(subCategoryNames).toEqual(["Transportation", "Utilities"]);
-  });
-});
+// The "split frozen fields on update", "subtransaction modification triggers
+// replace" and "undo after split replace" suites were removed here. They
+// asserted that editing a split's category or subtransactions silently deleted
+// and recreated the transaction, which this fork refuses to do. The replacement
+// behaviour is covered by split-replace-refusal.integration.test.ts.
 
 describe("split deletion", () => {
   it("deletes a split transaction and categories remain accessible", async () => {
@@ -279,100 +168,5 @@ describe("split deletion", () => {
     expect(groceries?.name).toBe("Groceries");
     expect(dining).toBeDefined();
     expect(dining?.name).toBe("Dining Out");
-  });
-});
-
-describe("undo after split replace", () => {
-  it("creates, updates (replace), then undoes the update", async () => {
-    // 1. Create a split
-    const created = (await harness.callTool("create_transactions", {
-      budget_id: "budget-1",
-      transactions: [
-        {
-          account_id: "acct-checking",
-          date: dateStr(0, 15),
-          amount: -120.0,
-          memo: "Undo replace test",
-          subtransactions: [
-            { amount: -70.0, category_id: "cat-groceries" },
-            { amount: -50.0, category_id: "cat-dining" },
-          ],
-        },
-      ],
-    })) as {
-      transactions: Array<{ id: string }>;
-      undo_history_ids: string[];
-    };
-
-    const originalId = created.transactions[0].id;
-
-    // 2. Update subtransactions (triggers replace, new ID)
-    const updated = (await harness.callTool("update_transactions", {
-      budget_id: "budget-1",
-      transactions: [
-        {
-          transaction_id: originalId,
-          subtransactions: [
-            { amount: -80.0, category_id: "cat-transport" },
-            { amount: -40.0, category_id: "cat-utilities" },
-          ],
-        },
-      ],
-    })) as {
-      results: Array<{ current_transaction_id: string }>;
-      undo_history_ids: string[];
-    };
-
-    const replacedId = updated.results[0].current_transaction_id;
-    expect(replacedId).not.toBe(originalId);
-
-    // 3. Check undo history contains the update
-    const history = (await harness.callTool("list_undo_history", {
-      budget_id: "budget-1",
-    })) as {
-      entries: Array<{ id: string; operation: string }>;
-    };
-    const updateEntry = history.entries.find(
-      (e) => e.id === updated.undo_history_ids[0],
-    );
-    expect(updateEntry).toBeDefined();
-    expect(updateEntry?.operation).toBe("update_transaction");
-
-    // 4. Undo the update -- should restore original subtransactions
-    // This uses force=true because the undo engine may need to replace again
-    const undoResult = (await harness.callTool("undo_operations", {
-      undo_history_ids: updated.undo_history_ids,
-      force: true,
-    })) as {
-      results: Array<{ status: string }>;
-      summary: { undone: number };
-    };
-    expect(undoResult.summary.undone).toBe(1);
-
-    // 5. Verify the restored transaction has original subtransactions
-    const search = (await harness.callTool("search_transactions", {
-      budget_id: "budget-1",
-      queries: [{ memo_contains: "Undo replace test" }],
-    })) as {
-      result_sets: Array<{
-        count: number;
-        transactions: Array<{
-          id: string;
-          subtransactions: Array<{
-            amount: number;
-            category_name: string;
-          }>;
-        }>;
-      }>;
-    };
-
-    expect(search.result_sets[0].count).toBe(1);
-    const restored = search.result_sets[0].transactions[0];
-    // May have yet another new ID due to re-replace
-    expect(restored.subtransactions).toHaveLength(2);
-    const restoredAmounts = restored.subtransactions
-      .map((s) => s.amount)
-      .sort((a, b) => a - b);
-    expect(restoredAmounts).toEqual([-70.0, -50.0]);
   });
 });

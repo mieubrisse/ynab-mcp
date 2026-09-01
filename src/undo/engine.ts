@@ -440,42 +440,55 @@ export class UndoEngine {
         Array.isArray(expected.subtransactions) &&
         (expected.subtransactions as unknown[]).length > 0;
 
-      // The YNAB API silently ignores category_id and subtransaction changes
-      // on existing splits. When the current transaction is a split, always
-      // use delete+recreate to guarantee the restore state is fully applied.
+      // Being a split does not by itself require the destructive path. YNAB
+      // cannot edit a split's category or subtransactions in place, so an undo
+      // that must change THOSE has no non-destructive route. An undo restoring
+      // a memo, approval, flag or cleared state has one — and routing it
+      // through delete-and-recreate would destroy the record and sever its
+      // bank-import link in order to put a memo back, which is exactly what
+      // `update_transactions` refuses to do.
       if (currentIsSplit) {
-        const subtransactions = asOptionalSubtransactions(
-          restore.subtransactions,
-        );
-        const replacement = {
-          account_id: asRequiredString(restore.account_id),
-          date: asRequiredString(restore.date),
-          amount: milliunitsToCurrency(asMilliunits(asNumber(restore.amount))),
-          payee_id: asOptionalNullableString(restore.payee_id),
-          category_id: subtransactions
-            ? undefined
-            : asOptionalNullableString(restore.category_id),
-          memo: asOptionalNullableString(restore.memo),
-          cleared: asOptionalString(restore.cleared) as
-            | "cleared"
-            | "uncleared"
-            | "reconciled"
-            | undefined,
-          approved: asOptionalBoolean(restore.approved),
-          flag_color: asOptionalNullableString(restore.flag_color),
-          subtransactions,
-        };
-        const { transaction: recreated } = await this.client.replaceTransaction(
-          entry.budget_id,
-          resolvedEntityId,
-          replacement,
-        );
-        await this.store.updateIdMappings(
-          entry.budget_id,
-          entry.undo_action.entity_id,
-          recreated.id,
-        );
-        return "Restored transaction via replace (split).";
+        const restoresSameSubtransactions =
+          JSON.stringify(restore.subtransactions ?? null) ===
+          JSON.stringify(expected.subtransactions ?? null);
+        const restoresSameCategory =
+          (restore.category_id ?? null) === (expected.category_id ?? null);
+
+        if (!restoresSameSubtransactions || !restoresSameCategory) {
+          throw new Error(
+            "Undoing this would have to change the category or subtransactions " +
+              "of a split. YNAB cannot do that in place; the only mechanism is " +
+              "to delete the transaction and create a replacement, which cannot " +
+              "be undone, gives it a new id, and permanently severs its link to " +
+              "the imported bank record. Restore it by hand in the YNAB app.",
+          );
+        }
+
+        // Only the fields a split can have edited in place. category_id and
+        // subtransactions are deliberately omitted: they are unchanged, and
+        // sending them is what would drag this onto the destructive path.
+        await this.client.updateTransactions(entry.budget_id, [
+          {
+            transaction_id: resolvedEntityId,
+            account_id: asOptionalString(restore.account_id),
+            date: asOptionalString(restore.date),
+            amount:
+              restore.amount !== undefined
+                ? milliunitsToCurrency(asMilliunits(asNumber(restore.amount)))
+                : undefined,
+            payee_id: asOptionalNullableString(restore.payee_id),
+            memo: asOptionalNullableString(restore.memo),
+            cleared: asOptionalString(restore.cleared) as
+              | "cleared"
+              | "uncleared"
+              | "reconciled"
+              | undefined,
+            approved: asOptionalBoolean(restore.approved),
+            flag_color: asOptionalNullableString(restore.flag_color),
+          },
+        ]);
+
+        return "Restored transaction fields; the split was left intact.";
       }
 
       const restoreSubs = asOptionalSubtransactions(restore.subtransactions);
@@ -538,7 +551,20 @@ export class UndoEngine {
       );
     }
 
-    return "Re-created deleted transaction.";
+    // Deliberately not phrased as a restoration. YNAB has no undelete, so this
+    // is a NEW transaction: different id, and no way to carry the original
+    // import_id, which means the bank-feed link is gone for good. Reporting it
+    // as "restored" invites the caller to tell the user the delete was
+    // reversed, when what exists is a lookalike that reconciliation will no
+    // longer match. The new id is named so the caller can actually follow it.
+    return (
+      "Could not restore the deleted transaction — YNAB has no undelete. " +
+      `Created a REPLACEMENT transaction instead, with a new id${
+        recreated ? ` (${recreated.id})` : ""
+      }. Its link to the imported bank record is permanently lost, so bank ` +
+      "reconciliation will no longer match it. Tell the user this was " +
+      "replaced rather than reversed."
+    );
   }
 
   private async applyScheduledTransactionUndo(

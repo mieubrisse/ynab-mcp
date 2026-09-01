@@ -477,7 +477,7 @@ describe("undoOperations — split transaction undo", () => {
     ]);
   });
 
-  it("reverts a split back to non-split via replaceTransaction", async () => {
+  it("refuses to un-split via undo, because that needs delete-and-recreate", async () => {
     const entry = createMockUndoEntry({
       undo_action: {
         type: "update",
@@ -532,28 +532,19 @@ describe("undoOperations — split transaction undo", () => {
 
     const result = await engine.undoOperations([entry.id], false);
 
-    expect(result.results[0].status).toBe("undone");
-    expect(result.results[0].message).toContain("replace");
-    expect(mockClient.replaceTransaction).toHaveBeenCalledWith(
-      "budget-1",
-      "tx-replaced",
-      expect.objectContaining({
-        account_id: "acc-1",
-        amount: 50,
-        category_id: "cat-1",
-        memo: "Before split",
-      }),
-    );
-    const replacement = mockClient.replaceTransaction.mock.calls[0][2];
-    expect(replacement.subtransactions).toBeUndefined();
-    expect(mockStore.updateIdMappings).toHaveBeenCalledWith(
-      "budget-1",
-      "tx-original",
-      "tx-recreated",
-    );
+    // Un-splitting is not something YNAB can do in place, so the only route
+    // would be to delete the transaction and recreate it — destroying the
+    // record and severing its bank-import link in order to perform an undo.
+    // `update_transactions` refuses that; undo must refuse it too, or the
+    // refusal is worth nothing.
+    expect(result.results[0].status).toBe("error");
+    expect(result.results[0].message).toMatch(/split/i);
+    expect(mockClient.replaceTransaction).not.toHaveBeenCalled();
+    expect(mockClient.deleteTransaction).not.toHaveBeenCalled();
+    expect(mockStore.updateIdMappings).not.toHaveBeenCalled();
   });
 
-  it("reverts a split to a different split via replaceTransaction", async () => {
+  it("refuses to rewrite a split's subtransactions via undo", async () => {
     const entry = createMockUndoEntry({
       undo_action: {
         type: "update",
@@ -616,11 +607,11 @@ describe("undoOperations — split transaction undo", () => {
 
     const result = await engine.undoOperations([entry.id], false);
 
-    expect(result.results[0].status).toBe("undone");
-    expect(mockClient.replaceTransaction).toHaveBeenCalled();
-    const replacement = mockClient.replaceTransaction.mock.calls[0][2];
-    expect(replacement.subtransactions).toHaveLength(2);
-    expect(replacement.category_id).toBeUndefined();
+    // Same reason: changing a split's subtransactions has no in-place route.
+    expect(result.results[0].status).toBe("error");
+    expect(result.results[0].message).toMatch(/split/i);
+    expect(mockClient.replaceTransaction).not.toHaveBeenCalled();
+    expect(mockClient.deleteTransaction).not.toHaveBeenCalled();
   });
 
   it("does not false-conflict when API returns subtransactions in different order", async () => {
@@ -701,11 +692,17 @@ describe("undoOperations — split transaction undo", () => {
 
     const result = await engine.undoOperations([entry.id], false);
 
-    expect(result.results[0].status).toBe("undone");
+    // This test is about ordering: a reordered subtransactions array coming
+    // back from the API must not read as state drift. The entry is refused for
+    // a separate and correct reason — its restore_state carries no
+    // subtransactions, so applying it would un-split the transaction — so the
+    // assertion is on the absence of a CONFLICT, which is what ordering would
+    // have caused.
     expect(result.summary.conflicts).toBe(0);
+    expect(result.results[0].status).not.toBe("conflict");
   });
 
-  it("uses replaceTransaction even when only non-frozen fields differ on a split", async () => {
+  it("restores non-frozen fields on a split in place, without deleting it", async () => {
     const entry = createMockUndoEntry({
       undo_action: {
         type: "update",
@@ -754,8 +751,16 @@ describe("undoOperations — split transaction undo", () => {
 
     await engine.undoOperations([entry.id], false);
 
-    expect(mockClient.replaceTransaction).toHaveBeenCalled();
-    expect(mockClient.updateTransactions).not.toHaveBeenCalled();
+    // The memo differs; the subtransactions and category do not. Restoring it
+    // needs no deletion, and doing one anyway would destroy the transaction to
+    // put a memo back.
+    expect(mockClient.replaceTransaction).not.toHaveBeenCalled();
+    expect(mockClient.deleteTransaction).not.toHaveBeenCalled();
+    expect(mockClient.updateTransactions).toHaveBeenCalled();
+    const restored = mockClient.updateTransactions.mock.calls[0][1][0];
+    expect(restored.memo).toBe("Old memo");
+    expect(restored.subtransactions).toBeUndefined();
+    expect(restored.category_id).toBeUndefined();
   });
 
   it("uses regular updateTransactions for non-split undo", async () => {
