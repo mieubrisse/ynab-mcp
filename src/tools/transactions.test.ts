@@ -250,19 +250,13 @@ describe("update_transactions", () => {
     expect(ctx.undoEngine.recordEntries).not.toHaveBeenCalled();
   });
 
-  it("replaces split when category_id is changed (un-split)", async () => {
+  // Changing a split's category or subtransactions is only possible in YNAB by
+  // deleting the transaction and creating a replacement. That is destructive and
+  // irreversible, so these tests pin the refusal rather than the old behaviour.
+
+  it("refuses a category change on a split instead of replacing it", async () => {
     const split = createMockSplitTransaction({ id: "tx-split" });
-    const replaced = createMockTransaction({
-      id: "tx-new",
-      amount: -50000,
-      category_id: "new-cat",
-    });
     ctx.ynabClient.getTransactionById.mockResolvedValue(split);
-    ctx.ynabClient.replaceTransaction.mockResolvedValue({
-      transaction: replaced,
-      previousId: "tx-split",
-    });
-    ctx.undoEngine.recordEntries.mockResolvedValue([{ id: "u1" }]);
 
     const handler = tools.update_transactions;
     const result = parseResult(
@@ -274,127 +268,84 @@ describe("update_transactions", () => {
     const splitResult = result.results.find(
       (r: { transaction_id: string }) => r.transaction_id === "tx-split",
     );
-    expect(splitResult.status).toBe("updated");
-    expect(splitResult.current_transaction_id).toBe("tx-new");
-    expect(ctx.ynabClient.replaceTransaction).toHaveBeenCalled();
+    expect(splitResult.status).toBe("refused");
+    expect(ctx.ynabClient.replaceTransaction).not.toHaveBeenCalled();
+    expect(ctx.ynabClient.deleteTransaction).not.toHaveBeenCalled();
     expect(ctx.ynabClient.updateTransactions).not.toHaveBeenCalled();
-
-    const replacement = ctx.ynabClient.replaceTransaction.mock.calls[0][2];
-    expect(replacement.category_id).toBe("new-cat");
-    expect(replacement.subtransactions).toBeUndefined();
   });
 
-  it("replaces split when subtransactions are changed", async () => {
+  it("refuses a subtransactions rewrite on a split", async () => {
     const split = createMockSplitTransaction({ id: "tx-split" });
-    const replaced = createMockSplitTransaction({ id: "tx-new" });
     ctx.ynabClient.getTransactionById.mockResolvedValue(split);
-    ctx.ynabClient.replaceTransaction.mockResolvedValue({
-      transaction: replaced,
-      previousId: "tx-split",
-    });
-    ctx.undoEngine.recordEntries.mockResolvedValue([{ id: "u1" }]);
 
-    const newSubs = [{ amount: -25, category_id: "cat-a" }];
     const handler = tools.update_transactions;
     const result = parseResult(
       await handler({
         transactions: [
-          { transaction_id: "tx-split", subtransactions: newSubs },
+          {
+            transaction_id: "tx-split",
+            subtransactions: [{ amount: -25, category_id: "cat-a" }],
+          },
         ],
       }),
     );
 
-    expect(result.results[0].status).toBe("updated");
-    const replacement = ctx.ynabClient.replaceTransaction.mock.calls[0][2];
-    expect(replacement.subtransactions).toEqual(newSubs);
-    expect(replacement.category_id).toBeUndefined();
+    expect(result.results[0].status).toBe("refused");
+    expect(ctx.ynabClient.replaceTransaction).not.toHaveBeenCalled();
   });
 
-  it("replaces split: subtransactions take precedence over category_id", async () => {
+  it("refuses rather than choosing between category_id and subtransactions", async () => {
+    // The old code silently let subtransactions win. Ambiguity plus deletion is
+    // the worst combination, so both together are still simply refused.
     const split = createMockSplitTransaction({ id: "tx-split" });
-    const replaced = createMockSplitTransaction({ id: "tx-new" });
     ctx.ynabClient.getTransactionById.mockResolvedValue(split);
-    ctx.ynabClient.replaceTransaction.mockResolvedValue({
-      transaction: replaced,
-      previousId: "tx-split",
-    });
-    ctx.undoEngine.recordEntries.mockResolvedValue([{ id: "u1" }]);
 
     const handler = tools.update_transactions;
-    await handler({
-      transactions: [
-        {
-          transaction_id: "tx-split",
-          category_id: "ignored-cat",
-          subtransactions: [{ amount: -50, category_id: "cat-a" }],
-        },
-      ],
-    });
+    const result = parseResult(
+      await handler({
+        transactions: [
+          {
+            transaction_id: "tx-split",
+            category_id: "ignored-cat",
+            subtransactions: [{ amount: -50, category_id: "cat-a" }],
+          },
+        ],
+      }),
+    );
 
-    const replacement = ctx.ynabClient.replaceTransaction.mock.calls[0][2];
-    expect(replacement.subtransactions).toBeDefined();
-    expect(replacement.category_id).toBeUndefined();
+    expect(result.results[0].status).toBe("refused");
+    expect(ctx.ynabClient.replaceTransaction).not.toHaveBeenCalled();
   });
 
-  it("preserves existing fields during replace when not in update payload", async () => {
-    const split = createMockSplitTransaction({
-      id: "tx-split",
-      amount: -50000,
-      memo: "Keep me",
-      flag_color: "red",
-      approved: true,
-      cleared: "cleared",
-      payee_id: "payee-1",
-      payee_name: "Store",
-    });
-    const replaced = createMockTransaction({ id: "tx-new" });
+  it("explains why the refusal happened, naming the consequences", async () => {
+    const split = createMockSplitTransaction({ id: "tx-split" });
     ctx.ynabClient.getTransactionById.mockResolvedValue(split);
-    ctx.ynabClient.replaceTransaction.mockResolvedValue({
-      transaction: replaced,
-      previousId: "tx-split",
-    });
-    ctx.undoEngine.recordEntries.mockResolvedValue([{ id: "u1" }]);
+
+    const handler = tools.update_transactions;
+    const result = parseResult(
+      await handler({
+        transactions: [{ transaction_id: "tx-split", category_id: "new-cat" }],
+      }),
+    );
+
+    const message = String(result.results[0].error);
+    expect(message).toMatch(/split/i);
+    expect(message).toMatch(/delete/i);
+    expect(message).toMatch(/cannot be undone|undone/i);
+  });
+
+  it("records no undo entry for a refused update, because nothing changed", async () => {
+    const split = createMockSplitTransaction({ id: "tx-split" });
+    ctx.ynabClient.getTransactionById.mockResolvedValue(split);
 
     const handler = tools.update_transactions;
     await handler({
       transactions: [{ transaction_id: "tx-split", category_id: "new-cat" }],
     });
 
-    const replacement = ctx.ynabClient.replaceTransaction.mock.calls[0][2];
-    expect(replacement.amount).toBe(-50);
-    expect(replacement.memo).toBe("Keep me");
-    expect(replacement.flag_color).toBe("red");
-    expect(replacement.approved).toBe(true);
-    expect(replacement.cleared).toBe("cleared");
-    expect(replacement.payee_id).toBe("payee-1");
-  });
-
-  it("records undo entry and persists ID mapping atomically after replace", async () => {
-    const split = createMockSplitTransaction({ id: "tx-split" });
-    const replaced = createMockTransaction({ id: "tx-new" });
-    ctx.ynabClient.getTransactionById.mockResolvedValue(split);
-    ctx.ynabClient.replaceTransaction.mockResolvedValue({
-      transaction: replaced,
-      previousId: "tx-split",
-    });
-    ctx.undoEngine.recordEntries.mockResolvedValue([{ id: "u1" }]);
-
-    const handler = tools.update_transactions;
-    await handler({
-      transactions: [{ transaction_id: "tx-split", category_id: "new-cat" }],
-    });
-
-    const entries = ctx.undoEngine.recordEntries.mock.calls[0][1];
-    expect(entries[0].undo_action.entity_id).toBe("tx-split");
-    expect(entries[0].undo_action.type).toBe("update");
-
+    const entries = ctx.undoEngine.recordEntries.mock.calls[0]?.[1] ?? [];
+    expect(entries).toHaveLength(0);
     expect(ctx.undoEngine.updateIdMappings).not.toHaveBeenCalled();
-    expect(ctx.undoEngine.recordEntries.mock.calls[0][2]).toEqual([
-      {
-        sourceEntityId: "tx-split",
-        targetEntityId: "tx-new",
-      },
-    ]);
   });
 
   it("allows non-frozen-field updates on splits via regular PATCH path", async () => {
@@ -416,27 +367,19 @@ describe("update_transactions", () => {
     expect(ctx.ynabClient.replaceTransaction).not.toHaveBeenCalled();
   });
 
-  it("handles mixed batch: regular updates and split replacements", async () => {
+  it("refuses only the split, letting the rest of the batch through", async () => {
+    // A refusal must not poison the whole batch. During a long backlog run the
+    // caller needs the safe edits applied and the unsafe one reported, not an
+    // all-or-nothing failure that forces the batch to be retried by hand.
     const normal = createMockTransaction({ id: "tx-normal", amount: -10000 });
     const split = createMockSplitTransaction({ id: "tx-split" });
     const normalUpdated = { ...normal, memo: "Updated" };
-    const splitReplaced = createMockTransaction({
-      id: "tx-new",
-      category_id: "new-cat",
-    });
 
     ctx.ynabClient.getTransactionById
       .mockResolvedValueOnce(normal)
       .mockResolvedValueOnce(split);
     ctx.ynabClient.updateTransactions.mockResolvedValue([normalUpdated]);
-    ctx.ynabClient.replaceTransaction.mockResolvedValue({
-      transaction: splitReplaced,
-      previousId: "tx-split",
-    });
-    ctx.undoEngine.recordEntries.mockResolvedValue([
-      { id: "u1" },
-      { id: "u2" },
-    ]);
+    ctx.undoEngine.recordEntries.mockResolvedValue([{ id: "u1" }]);
 
     const handler = tools.update_transactions;
     const result = parseResult(
@@ -455,9 +398,10 @@ describe("update_transactions", () => {
       (r: { transaction_id: string }) => r.transaction_id === "tx-split",
     );
     expect(normalResult.status).toBe("updated");
-    expect(splitResult.status).toBe("updated");
+    expect(splitResult.status).toBe("refused");
     expect(ctx.ynabClient.updateTransactions).toHaveBeenCalled();
-    expect(ctx.ynabClient.replaceTransaction).toHaveBeenCalled();
+    expect(ctx.ynabClient.replaceTransaction).not.toHaveBeenCalled();
+    expect(ctx.ynabClient.deleteTransaction).not.toHaveBeenCalled();
   });
 });
 

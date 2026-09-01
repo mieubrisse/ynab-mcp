@@ -13,12 +13,10 @@ import {
   formatCurrency,
   formatTransactionForOutput,
   type Milliunits,
-  milliunitsToCurrency,
   snapshotTransaction,
 } from "../ynab/format.js";
 import type {
   CreateTransactionInput,
-  TransactionClearedStatus,
   TransactionSearchQuery,
   UpdateTransactionInput,
 } from "../ynab/types.js";
@@ -367,7 +365,10 @@ export function registerTransactionTools(
           context.undoEngine,
           resolvedBudgetId,
           `Updating ${transactions.length} transaction${transactions.length === 1 ? "" : "s"}`,
-          async (ambiguity) => {
+          // No ambiguity tracker here: this handler no longer catches per-item
+          // write errors. The single batch call either succeeds or throws to the
+          // outer handler, and a refusal is a decision, not a failed write.
+          async () => {
             const beforeById = new Map<
               string,
               ReturnType<typeof snapshotTransaction>
@@ -402,7 +403,7 @@ export function registerTransactionTools(
             }
 
             const regularUpdates: (typeof transactions)[number][] = [];
-            const replaceUpdates: (typeof transactions)[number][] = [];
+            const refusedUpdates: (typeof transactions)[number][] = [];
 
             for (const update of transactions) {
               if (missingIds.has(update.transaction_id)) continue;
@@ -419,7 +420,7 @@ export function registerTransactionTools(
                 update.subtransactions !== undefined;
 
               if (isSplit && touchesFrozenFields) {
-                replaceUpdates.push(update);
+                refusedUpdates.push(update);
               } else {
                 regularUpdates.push(update);
               }
@@ -496,62 +497,29 @@ export function registerTransactionTools(
               });
             }
 
-            for (const update of replaceUpdates) {
-              const existing = prefetchedTransactions.get(
-                update.transaction_id,
-              );
-              const before = beforeById.get(update.transaction_id);
-              if (!existing || !before) continue;
-
-              try {
-                const replacement = buildReplacementFromUpdate(
-                  existing,
-                  update as UpdateTransactionInput,
-                );
-                const { transaction: after, previousId } =
-                  await context.ynabClient.replaceTransaction(
-                    resolvedBudgetId,
-                    update.transaction_id,
-                    replacement,
-                  );
-
-                anyMutated = true;
-                results.push({
-                  transaction_id: update.transaction_id,
-                  current_transaction_id: after.id,
-                  status: "updated",
-                  transaction: formatTransactionForOutput(
-                    brandAmounts(after),
-                    lookups,
-                  ),
-                });
-
-                undoEntries.push({
-                  operation: "update_transaction",
-                  description: `Updated transaction ${update.transaction_id} (replaced split).`,
-                  undo_action: {
-                    type: "update",
-                    entity_type: "transaction",
-                    entity_id: previousId,
-                    expected_state: snapshotTransaction(after),
-                    restore_state: before,
-                  },
-                });
-                idMappings.push({
-                  sourceEntityId: previousId,
-                  targetEntityId: after.id,
-                });
-              } catch (error) {
-                ambiguity.note(error);
-                results.push({
-                  transaction_id: update.transaction_id,
-                  status: "error",
-                  message: extractErrorMessage(
-                    error,
-                    "Failed to replace split transaction.",
-                  ),
-                });
-              }
+            // YNAB cannot edit a split's category or subtransactions in place.
+            // The only mechanism is delete-and-recreate, which is destructive:
+            // YNAB has no undelete, the transaction returns under a new id, and
+            // its import_id link to the bank feed cannot be reconstructed. Doing
+            // that silently inside a routine batch update means a
+            // categorization can annihilate a record nobody agreed to delete,
+            // so this refuses and hands the decision back to the caller.
+            for (const update of refusedUpdates) {
+              results.push({
+                transaction_id: update.transaction_id,
+                status: "refused",
+                error:
+                  "This transaction is already a split, and YNAB offers no way " +
+                  "to change a split's category or subtransactions in place. " +
+                  "The only mechanism is to delete it and create a replacement, " +
+                  "which cannot be undone, gives the transaction a new id, and " +
+                  "permanently severs its link to the imported bank record. " +
+                  "That is a deletion, so it needs an explicit decision rather " +
+                  "than happening inside a batch update. To proceed, delete and " +
+                  "recreate it deliberately, or edit the split in the YNAB app. " +
+                  "Other fields on a split — memo, approval, cleared status, " +
+                  "flag — can still be updated here.",
+              });
             }
 
             if (anyMutated) {
@@ -717,50 +685,4 @@ export function registerTransactionTools(
       }
     },
   );
-}
-
-function buildReplacementFromUpdate(
-  existing: {
-    account_id: string;
-    date: string;
-    amount: number;
-    payee_id?: string | null;
-    payee_name?: string | null;
-    category_id?: string | null;
-    memo?: string | null;
-    cleared: string;
-    approved: boolean;
-    flag_color?: string | null;
-  },
-  update: UpdateTransactionInput,
-): CreateTransactionInput {
-  const amount =
-    update.amount ?? milliunitsToCurrency(asMilliunits(existing.amount));
-  const hasSubs = update.subtransactions !== undefined;
-  return {
-    account_id: update.account_id ?? existing.account_id,
-    date: update.date ?? existing.date,
-    amount,
-    payee_id:
-      update.payee_id !== undefined
-        ? update.payee_id
-        : (existing.payee_id ?? null),
-    payee_name:
-      update.payee_name !== undefined
-        ? update.payee_name
-        : (existing.payee_name ?? null),
-    category_id: hasSubs
-      ? undefined
-      : update.category_id !== undefined
-        ? update.category_id
-        : (existing.category_id ?? null),
-    memo: update.memo !== undefined ? update.memo : (existing.memo ?? null),
-    cleared: update.cleared ?? (existing.cleared as TransactionClearedStatus),
-    approved: update.approved ?? existing.approved,
-    flag_color:
-      update.flag_color !== undefined
-        ? update.flag_color
-        : (existing.flag_color ?? null),
-    subtransactions: update.subtransactions,
-  };
 }
