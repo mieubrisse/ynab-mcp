@@ -1,5 +1,3 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createIntegrationHarness,
@@ -412,41 +410,12 @@ describe("undo of already-deleted entities", () => {
   });
 });
 
-describe("crash recovery", () => {
-  it("surfaces pending operations left behind by a crashed process", async () => {
-    harness = await createIntegrationHarness({ seed: seedStandardBudget });
-
-    // Simulate a server that died mid-write: its pending marker is still on
-    // disk when this (fresh) server reads the shared data directory.
-    const historyDir = join(harness.dataDirectory, "history");
-    await mkdir(historyDir, { recursive: true });
-    await writeFile(
-      join(historyDir, "budget-1.json"),
-      JSON.stringify({
-        entries: [],
-        id_mappings: {},
-        pending_operations: [
-          {
-            id: "budget-1::pending::12345",
-            budget_id: "budget-1",
-            timestamp: new Date().toISOString(),
-            description: "Creating 2 transactions",
-          },
-        ],
-      }),
-      "utf8",
-    );
-
-    const history = (await harness.callTool("list_undo_history", {})) as {
-      warning?: string;
-      pending_operations?: Array<{ description: string }>;
-    };
-    expect(history.warning).toMatch(/interrupted/);
-    expect(history.pending_operations?.[0].description).toBe(
-      "Creating 2 transactions",
-    );
-  });
-});
+// The "crash recovery" suite was removed here. It wrote a pending marker
+// directly into the undo history file on disk and asserted that a fresh
+// server picked it up. Undo history is now held in memory so the server can
+// run with no filesystem access at all, which means a marker cannot outlive
+// the process that made it. In-session pending markers still work and are
+// covered above; durable cross-restart recovery is a workflow-layer job.
 
 describe("rate limiting", () => {
   it("intercepts 429s and blocks subsequent calls locally", async () => {

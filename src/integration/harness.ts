@@ -1,6 +1,3 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createYnabMcpServer } from "../server.js";
@@ -19,8 +16,6 @@ export interface IntegrationHarness {
   client: Client;
   /** The fake YNAB HTTP server, for fault injection and abort stats. */
   fake: FakeYnabServer;
-  /** The server's data directory (undo history lives in `history/`). */
-  dataDirectory: string;
   callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -47,14 +42,10 @@ export async function createIntegrationHarness(options?: {
     options?.fakeServerOptions,
   );
 
-  // 4. Create temp directory for undo store persistence
-  const tempDir = await mkdtemp(join(tmpdir(), "ynab-integration-"));
-
   // 5. Create MCP server
   const { server } = createYnabMcpServer({
     accessToken: "fake-token",
     endpointUrl: fakeServer.url,
-    dataDirectory: tempDir,
     readOnly: options?.readOnly,
     timeoutMs: options?.timeoutMs,
     maxRetries: options?.maxRetries,
@@ -107,14 +98,12 @@ export async function createIntegrationHarness(options?: {
   const close = async (): Promise<void> => {
     await client.close();
     await fakeServer.close();
-    await rm(tempDir, { recursive: true, force: true });
   };
 
   return {
     state,
     client,
     fake: fakeServer,
-    dataDirectory: tempDir,
     callTool,
     close,
   };

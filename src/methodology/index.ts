@@ -1,8 +1,4 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const methodologyDir = dirname(fileURLToPath(import.meta.url));
+import { METHODOLOGY_CONTENT } from "./content.js";
 
 export interface KnowledgeTopic {
   name: string;
@@ -62,7 +58,17 @@ const topics: ReadonlyArray<{
 ];
 
 function loadTopic(topic: (typeof topics)[number]): KnowledgeTopic {
-  const content = readFileSync(join(methodologyDir, topic.file), "utf-8");
+  // Content is compiled in rather than read from disk: this server runs with
+  // no filesystem access at all, so a readFileSync here would be a permission
+  // the sandbox deliberately does not grant.
+  const content = METHODOLOGY_CONTENT[topic.name];
+  if (content === undefined) {
+    throw new Error(
+      `Methodology topic '${topic.name}' has no inlined content. Re-run ` +
+        "scripts/inline-methodology.mjs after adding its markdown file.",
+    );
+  }
+
   return {
     name: topic.name,
     title: topic.title,

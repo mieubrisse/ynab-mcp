@@ -12,7 +12,6 @@ import { extractErrorMessage } from "./ynab/errors.js";
 
 export interface CreateServerOptions {
   accessToken: string;
-  dataDirectory: string;
   endpointUrl?: string;
   version?: string;
   readOnly?: boolean;
@@ -34,10 +33,7 @@ export function createYnabMcpServer(options: CreateServerOptions): {
     timeoutMs: options.timeoutMs,
     maxRetries: options.maxRetries,
   });
-  const undoStore = new UndoStore(
-    options.dataDirectory,
-    options.undoHistoryLimit,
-  );
+  const undoStore = new UndoStore(options.undoHistoryLimit);
   const undoEngine = new UndoEngine(ynabClient, undoStore);
 
   // A split-deletion workaround transaction whose cleanup delete failed

@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -70,15 +67,16 @@ function parseBooleanEnv(
 }
 
 async function main(): Promise<void> {
-  const accessToken = process.env.YNAB_API_TOKEN;
+  const accessToken = process.env.YNAB_ACCESS_TOKEN;
   if (!accessToken) {
-    throw new Error("YNAB_API_TOKEN is required.");
+    throw new Error(
+      "YNAB_ACCESS_TOKEN is not set. This server expects the token to be " +
+        "injected into its environment at launch, so it never passes through " +
+        "a config file or a caller.",
+    );
   }
 
   const endpointUrl = process.env.YNAB_API_URL;
-  const dataDirectory =
-    process.env.YNAB_MCP_DATA_DIR ?? join(homedir(), ".ynab-mcp");
-  await mkdir(dataDirectory, { recursive: true });
 
   const readOnly =
     parseBooleanEnv("YNAB_READ_ONLY", process.env.YNAB_READ_ONLY) ?? false;
@@ -99,7 +97,6 @@ async function main(): Promise<void> {
   const { server } = createYnabMcpServer({
     accessToken,
     endpointUrl,
-    dataDirectory,
     version,
     readOnly,
     cacheTtlMs,

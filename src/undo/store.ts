@@ -1,21 +1,6 @@
 import { randomUUID } from "node:crypto";
-import {
-  mkdir,
-  readdir,
-  readFile,
-  rename,
-  stat,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
-import { join } from "node:path";
 
 import type { PendingOperation, UndoEntry, UndoHistoryFile } from "./types.js";
-
-const DEFAULT_HISTORY: UndoHistoryFile = {
-  entries: [],
-  id_mappings: {},
-};
 
 /**
  * Pending-operation markers describe an interrupted (or ambiguous) write.
@@ -25,13 +10,6 @@ const DEFAULT_HISTORY: UndoHistoryFile = {
  * from the file on the next persisted write.
  */
 const PENDING_OPERATION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-
-/** Leftover atomic-write temp files older than this are deleted; younger
- * ones might belong to a live writer (possibly another process). */
-const TMP_FILE_MAX_AGE_MS = 60 * 60 * 1000;
-
-/** Quarantined corrupt history files are kept a while for debugging. */
-const CORRUPT_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface ListHistoryOptions {
   limit: number;
@@ -44,21 +22,30 @@ interface IdMappingUpdate {
   targetEntityId: string;
 }
 
+/**
+ * In-process undo history, keyed by budget.
+ *
+ * This deliberately does NOT persist to disk. The server runs inside a sandbox
+ * granted network access to api.ynab.com and nothing else — no read, no write,
+ * no filesystem at all — because that boundary is what limits the blast radius
+ * of every dependency in the tree. Buying an undo journal with filesystem
+ * access would have been a poor trade.
+ *
+ * The consequence, stated plainly: undo history does not survive a restart. It
+ * covers the window that matters most — a long batch run inside one session —
+ * and durable reversal is a workflow-layer concern, where the before-state is
+ * already in hand and can be recorded without granting the server anything.
+ */
 export class UndoStore {
-  private readonly historyDirectory: string;
-
   private readonly maxEntriesPerBudget: number;
 
   private readonly budgetLocks = new Map<string, Promise<void>>();
 
-  private housekeepingStarted = false;
+  private readonly historyByBudget = new Map<string, UndoHistoryFile>();
 
-  // The history file is reparsed and rewritten whole on every write
-  // operation (up to three times per tool call, counting pending markers),
-  // so the cap is bounded by serialization latency rather than memory:
-  // ~1 KB per compact entry keeps a full 2000-entry file around 2 MB.
-  constructor(dataDirectory: string, maxEntriesPerBudget = 2000) {
-    this.historyDirectory = join(dataDirectory, "history");
+  // The cap bounds memory rather than serialization latency now: ~1 KB per
+  // compact entry keeps a full 2000-entry history around 2 MB per budget.
+  constructor(maxEntriesPerBudget = 2000) {
     this.maxEntriesPerBudget = maxEntriesPerBudget;
   }
 
@@ -251,55 +238,37 @@ export class UndoStore {
     );
   }
 
-  private async readBudgetHistoryUnsafe(
-    budgetId: string,
-  ): Promise<UndoHistoryFile> {
-    await this.ensureHistoryDirectory();
-    const filePath = this.getBudgetHistoryPath(budgetId);
-
-    try {
-      const content = await readFile(filePath, "utf8");
-      const parsed = JSON.parse(content) as Partial<UndoHistoryFile>;
-
-      return {
-        entries: Array.isArray(parsed.entries) ? parsed.entries : [],
-        id_mappings:
-          parsed.id_mappings && typeof parsed.id_mappings === "object"
-            ? parsed.id_mappings
-            : {},
-        pending_operations: (Array.isArray(parsed.pending_operations)
-          ? parsed.pending_operations
-          : []
-        ).filter((op) => !this.isExpiredPendingOperation(op)),
-      };
-    } catch (error) {
-      const nodeError = error as NodeJS.ErrnoException;
-      if (nodeError.code === "ENOENT") {
-        return { ...DEFAULT_HISTORY };
-      }
-
-      if (error instanceof SyntaxError) {
-        await this.quarantineCorruptHistoryFile(filePath);
-        return { ...DEFAULT_HISTORY };
-      }
-
-      throw error;
+  private readBudgetHistoryUnsafe(budgetId: string): Promise<UndoHistoryFile> {
+    const stored = this.historyByBudget.get(budgetId);
+    if (!stored) {
+      // Must be a genuinely fresh object, not `{ ...DEFAULT_HISTORY }`: that
+      // spread is shallow, so every budget would share one `id_mappings`
+      // object and writes would leak across budgets. The old on-disk path got
+      // away with it because JSON round-tripping produced new objects.
+      return Promise.resolve({
+        entries: [],
+        id_mappings: {},
+        pending_operations: [],
+      });
     }
+
+    // Expired pending markers are filtered on read, exactly as they were when
+    // this came off disk, so a marker cannot outlive its usefulness.
+    return Promise.resolve({
+      entries: stored.entries,
+      id_mappings: stored.id_mappings,
+      pending_operations: (stored.pending_operations ?? []).filter(
+        (op) => !this.isExpiredPendingOperation(op),
+      ),
+    });
   }
 
-  private async writeBudgetHistoryUnsafe(
+  private writeBudgetHistoryUnsafe(
     budgetId: string,
     history: UndoHistoryFile,
   ): Promise<void> {
-    await this.ensureHistoryDirectory();
-    const filePath = this.getBudgetHistoryPath(budgetId);
-    const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-    // Compact JSON: this file is machine-read only, and it is rewritten on
-    // every write operation, so pretty-printing would double the I/O.
-    const content = JSON.stringify(history);
-
-    await writeFile(temporaryPath, content, "utf8");
-    await rename(temporaryPath, filePath);
+    this.historyByBudget.set(budgetId, history);
+    return Promise.resolve();
   }
 
   private pruneIdMappings(history: UndoHistoryFile): void {
@@ -325,71 +294,14 @@ export class UndoStore {
     return Date.now() - timestamp > PENDING_OPERATION_MAX_AGE_MS;
   }
 
-  private async ensureHistoryDirectory(): Promise<void> {
-    await mkdir(this.historyDirectory, { recursive: true });
-    if (!this.housekeepingStarted) {
-      this.housekeepingStarted = true;
-      // Best-effort, off the hot path: stale artifacts are only ever noise.
-      void this.cleanupStaleArtifacts().catch(() => {});
-    }
-  }
-
   /**
-   * Delete leftover `.tmp` files (from atomic writes that never renamed)
-   * and aged-out `.corrupt-*` quarantine files. Age thresholds keep live
-   * writers' temp files and recent corruption evidence intact.
-   */
-  private async cleanupStaleArtifacts(): Promise<void> {
-    const names = await readdir(this.historyDirectory);
-    const now = Date.now();
-
-    await Promise.all(
-      names.map(async (name) => {
-        const isTmp = name.endsWith(".tmp");
-        const isCorrupt = name.includes(".corrupt-");
-        if (!isTmp && !isCorrupt) return;
-
-        const maxAge = isTmp ? TMP_FILE_MAX_AGE_MS : CORRUPT_FILE_MAX_AGE_MS;
-        const filePath = join(this.historyDirectory, name);
-        try {
-          const info = await stat(filePath);
-          if (now - info.mtimeMs > maxAge) {
-            await unlink(filePath);
-          }
-        } catch {
-          // Raced with another cleaner or writer; nothing to do.
-        }
-      }),
-    );
-  }
-
-  private getBudgetHistoryPath(budgetId: string): string {
-    return join(this.historyDirectory, `${encodeURIComponent(budgetId)}.json`);
-  }
-
-  private async quarantineCorruptHistoryFile(filePath: string): Promise<void> {
-    const corruptPath = `${filePath}.corrupt-${process.pid}-${Date.now()}`;
-
-    try {
-      await rename(filePath, corruptPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw error;
-      }
-    }
-  }
-
-  /**
-   * Serialize read-modify-write cycles per budget WITHIN THIS PROCESS.
+   * Serialize read-modify-write cycles per budget.
    *
-   * The lock is deliberately in-process only. Two server processes sharing
-   * the same data directory cannot corrupt a history file (writes go
-   * through an atomic temp-file rename), but they can lose each other's
-   * updates: both read, both modify, last rename wins. Advisory file locks
-   * were considered and rejected — they hang on some network filesystems,
-   * need stale-lock recovery after crashes, and the multi-process case
-   * (several MCP servers pointed at one YNAB_MCP_DATA_DIR) is explicitly
-   * unsupported. Run one server per data directory instead.
+   * Still required even though the history is now in memory: a cycle reads,
+   * mutates and writes back across `await` points, so two concurrent tool
+   * calls against the same budget could otherwise interleave and lose one
+   * another's entries. Each server process owns its own history, so there is
+   * no cross-process case to reason about any more.
    */
   private async withBudgetLock<T>(
     budgetId: string,
