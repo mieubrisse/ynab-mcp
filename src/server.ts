@@ -75,10 +75,15 @@ export function createYnabMcpServer(options: CreateServerOptions): {
         "spending analysis (aggregation, time series, income vs expense, " +
         "recurring-charge and anomaly detection); the money-movement audit feed " +
         "showing how budgeted amounts changed; a one-call budget health " +
-        "snapshot; and undo for every write. Tool inputs always take plain " +
-        "currency units, never milliunits, and outputs report them the same " +
-        "way (a few analysis totals add raw milliunits alongside). Every " +
-        "write returns undo_history_ids usable with undo_operations. Read the ynab://knowledge/* resources for YNAB " +
+        "snapshot; and in-session undo for writes. Tool inputs always take " +
+        "plain currency units, never milliunits, and outputs report them the " +
+        "same way (a few analysis totals add raw milliunits alongside). Every " +
+        "write returns undo_history_ids usable with undo_operations, but that " +
+        "history lives in memory and does NOT survive a server restart, and " +
+        "an undo that would have to change an existing split's category or " +
+        "subtransactions is refused rather than performed — YNAB offers no " +
+        "in-place route, and the destructive one severs the bank-import link. " +
+        "Do not promise an undo you have not checked is available. Read the ynab://knowledge/* resources for YNAB " +
         "methodology (credit cards, targets, overspending, reconciliation) " +
         "before giving budgeting advice. The YNAB API allows 200 requests/hour; " +
         "some batch tools cost one request per item and say so in their " +
