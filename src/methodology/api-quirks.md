@@ -34,16 +34,17 @@ To create a split transaction, provide a `subtransactions` array on the transact
 
 ### Modifying splits
 
-The YNAB API does not support modifying `subtransactions` or `category_id` on an existing split transaction — those changes are silently ignored. The MCP server works around this by transparently deleting and recreating the transaction when you change split-related fields. This means:
+The YNAB API does not support modifying `subtransactions` or `category_id` on an existing split transaction — those changes are silently ignored. The only mechanism that would achieve it is deleting the transaction and creating a replacement, and **this server refuses to do that**. YNAB has no undelete, the replacement carries a new ID, and its `import_id` link to the imported bank record cannot be recreated — so a routine-looking categorization would destroy a record and sever its bank matching. That is a deletion, and it needs an explicit decision rather than happening inside a batch update.
 
-- Changing `subtransactions` or `category_id` on a split works as expected through `update_transactions`
-- The transaction will get a **new ID** after such an update — check `current_transaction_id` in the result
-- Non-split fields (memo, flag, date, amount, payee, cleared, approved) are updated normally without changing the ID
+- Changing `subtransactions` or `category_id` on an existing split returns `status: "refused"` with an explanation. Nothing is written, and the rest of the batch still applies.
+- Non-split fields (memo, flag, date, amount, payee, cleared, approved) update normally on a split, and the ID does not change.
+- `undo_operations` follows the same rule: undoing a memo or approval change on a split restores it in place, but an undo that would have to change the split's category or subtransactions is refused rather than performed destructively.
+- To make such a change, do it by hand in the YNAB app, or delete and recreate the transaction deliberately.
 
 ### Converting between split and non-split
 
-- Converting a non-split transaction to a split (by adding `subtransactions`) works
-- Un-splitting (setting a `category_id` on a split) also works — the server handles it via replace
+- Converting a non-split transaction to a split (by adding `subtransactions`) works.
+- **Un-splitting is not supported.** Setting a `category_id` on a split is refused for the reason above. It is also not reversible through `undo_operations` — treat converting a transaction to a split as a one-way step.
 
 ## Scheduled Transaction Date Validation
 

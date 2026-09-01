@@ -8,6 +8,7 @@
 // grants network to api.ynab.com and nothing else — so the content is compiled
 // in instead. Edit the .md files, run this, and commit the regenerated module.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,7 +42,11 @@ for (const name of TOPIC_NAMES) {
 
 sections.push("export const METHODOLOGY_CONTENT: Record<string, string> = {");
 for (const name of TOPIC_NAMES) {
-  sections.push(`  "${name}": ${toIdentifier(name)},`);
+  // Quote only when the key is not a bare identifier, matching what the
+  // formatter would produce — otherwise running this script emits code that
+  // fails the project's own lint.
+  const key = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : JSON.stringify(name);
+  sections.push(`  ${key}: ${toIdentifier(name)},`);
 }
 sections.push("};");
 sections.push("");
@@ -62,6 +67,22 @@ writeFileSync(
     `export const SERVER_VERSION = ${JSON.stringify(version)};`,
     "",
   ].join("\n"),
+);
+
+// Formatted by the project's own formatter rather than by hand-matching its
+// output here. Without this, following the instructions at the top of this file
+// produces code that fails `npm run lint`, and every build leaves a spurious
+// diff in a tracked file.
+execFileSync(
+  "npx",
+  [
+    "biome",
+    "format",
+    "--write",
+    "src/methodology/content.ts",
+    "src/version.ts",
+  ],
+  { cwd: repoRoot, stdio: "ignore" },
 );
 
 process.stdout.write(
