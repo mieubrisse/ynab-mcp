@@ -558,7 +558,7 @@ describe("formatTransactionForOutput provenance", () => {
     });
     const result = formatTransactionForOutput(tx, createMockNameLookup());
 
-    expect(result.provenance).toEqual({
+    expect(result.provenance).toStrictEqual({
       import_id: "YNAB:-50000:2024-01-15:1",
     });
   });
@@ -569,7 +569,7 @@ describe("formatTransactionForOutput provenance", () => {
     });
     const result = formatTransactionForOutput(tx, createMockNameLookup());
 
-    expect(result.provenance).toEqual({ import_id: "pluggy-txn-8f2a1c" });
+    expect(result.provenance).toStrictEqual({ import_id: "pluggy-txn-8f2a1c" });
   });
 
   it("passes through both imported payee names", () => {
@@ -580,7 +580,7 @@ describe("formatTransactionForOutput provenance", () => {
     });
     const result = formatTransactionForOutput(tx, createMockNameLookup());
 
-    expect(result.provenance).toEqual({
+    expect(result.provenance).toStrictEqual({
       import_id: "YNAB:-50000:2024-01-15:1",
       import_payee_name: "SUPERMARKET #442",
       import_payee_name_original: "SQ *SUPERMARKET #442 SAO PAULO",
@@ -593,7 +593,7 @@ describe("formatTransactionForOutput provenance", () => {
     });
     const result = formatTransactionForOutput(tx, createMockNameLookup());
 
-    expect(result.provenance).toEqual({
+    expect(result.provenance).toStrictEqual({
       matched_transaction_id: "tx-matched-9",
     });
   });
@@ -605,7 +605,7 @@ describe("formatTransactionForOutput provenance", () => {
     });
     const result = formatTransactionForOutput(tx, createLookupWithSavings());
 
-    expect(result.provenance).toEqual({
+    expect(result.provenance).toStrictEqual({
       transfer_account_id: "acc-2",
       transfer_account_name: "Savings",
       transfer_transaction_id: "tx-other-side",
@@ -619,11 +619,18 @@ describe("formatTransactionForOutput provenance", () => {
     });
     const result = formatTransactionForOutput(tx, createMockNameLookup());
 
-    expect(result.provenance).toEqual({
+    expect(result.provenance).toStrictEqual({
       transfer_account_id: "acc-unknown",
       transfer_account_name: null,
       transfer_transaction_id: "tx-other-side",
     });
+  });
+
+  it("reports an empty-string value rather than treating it as absent", () => {
+    const tx = createMockTransaction({ import_id: "" });
+    const result = formatTransactionForOutput(tx, createMockNameLookup());
+
+    expect(result.provenance).toStrictEqual({ import_id: "" });
   });
 
   it("includes only the fields YNAB reported, not the null ones", () => {
@@ -637,24 +644,24 @@ describe("formatTransactionForOutput provenance", () => {
     });
     const result = formatTransactionForOutput(tx, createMockNameLookup());
 
-    expect(Object.keys(result.provenance ?? {})).toEqual(["import_id"]);
+    expect(Object.keys(result.provenance ?? {})).toStrictEqual(["import_id"]);
   });
 
   it("carries every origin field at once when YNAB reports them all", () => {
     const tx = createMockTransaction({
       import_id: "YNAB:-50000:2024-01-15:1",
-      import_payee_name: "TRANSFER",
-      import_payee_name_original: "ONLINE TRANSFER TO SAVINGS",
+      import_payee_name: "PAYEE AS IMPORTED",
+      import_payee_name_original: "PAYEE AS ON STATEMENT",
       matched_transaction_id: "tx-matched-9",
       transfer_account_id: "acc-2",
       transfer_transaction_id: "tx-other-side",
     });
     const result = formatTransactionForOutput(tx, createLookupWithSavings());
 
-    expect(result.provenance).toEqual({
+    expect(result.provenance).toStrictEqual({
       import_id: "YNAB:-50000:2024-01-15:1",
-      import_payee_name: "TRANSFER",
-      import_payee_name_original: "ONLINE TRANSFER TO SAVINGS",
+      import_payee_name: "PAYEE AS IMPORTED",
+      import_payee_name_original: "PAYEE AS ON STATEMENT",
       matched_transaction_id: "tx-matched-9",
       transfer_account_id: "acc-2",
       transfer_account_name: "Savings",
@@ -686,7 +693,7 @@ describe("formatTransactionForOutput provenance", () => {
     const result = formatTransactionForOutput(tx, createLookupWithSavings());
 
     const subs = result.subtransactions as Array<Record<string, unknown>>;
-    expect(subs[0].provenance).toEqual({
+    expect(subs[0].provenance).toStrictEqual({
       transfer_account_id: "acc-2",
       transfer_account_name: "Savings",
       transfer_transaction_id: "tx-sub-other-side",

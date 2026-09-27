@@ -23,6 +23,9 @@ const DIRECT_IMPORT_ID = `YNAB:-42990:${IMPORT_DATE}:1`;
 /** An import_id of the kind an API caller supplies — no required format. */
 const API_IMPORT_ID = "pluggy-a1b2c3d4e5";
 
+/** Deliberately not the id of any seeded record. See the seed comment below. */
+const MATCHED_COUNTERPART_ID = "tx-matched-counterpart";
+
 function seedProvenanceRecords(builder: FakeBudgetBuilder): void {
   seedStandardBudget(builder);
 
@@ -44,7 +47,9 @@ function seedProvenanceRecords(builder: FakeBudgetBuilder): void {
       transfer_account_id: "acct-checking",
       transfer_transaction_id: "tx-transfer-out",
     })
-    // An imported record carrying both imported payee names and a match.
+    // An imported record carrying both imported payee names and a match. The
+    // matched id deliberately names no seeded record: the server passes the
+    // string through and makes no claim that it resolves to anything.
     .withTransaction("tx-direct-import", {
       account_id: "acct-checking",
       amount: -42990,
@@ -53,7 +58,7 @@ function seedProvenanceRecords(builder: FakeBudgetBuilder): void {
       import_id: DIRECT_IMPORT_ID,
       import_payee_name: "GROCERY STORE 4412",
       import_payee_name_original: "SQ *GROCERY STORE 4412 CHICAGO IL",
-      matched_transaction_id: "tx-hand-entered",
+      matched_transaction_id: MATCHED_COUNTERPART_ID,
     })
     // An imported record whose import_id came from an API caller.
     .withTransaction("tx-api-import", {
@@ -63,13 +68,15 @@ function seedProvenanceRecords(builder: FakeBudgetBuilder): void {
       category_id: "cat-groceries",
       import_id: API_IMPORT_ID,
     })
-    // A record with none of the origin fields set.
-    .withTransaction("tx-hand-entered", {
+    // A record with none of the origin fields set. Naming it for that and
+    // nothing more is the point: several different creation stories produce a
+    // record with no origin fields, and none of them is readable from these
+    // fields alone.
+    .withTransaction("tx-no-origin-fields", {
       account_id: "acct-checking",
       amount: -42990,
       date: IMPORT_DATE,
       category_id: "cat-groceries",
-      memo: "Entered by hand",
     });
 }
 
@@ -126,9 +133,9 @@ describe("search_transactions provenance", () => {
       API_IMPORT_ID,
     );
 
-    const handEntered = byId.get("tx-hand-entered");
-    expect(handEntered).toBeDefined();
-    expect(handEntered).not.toHaveProperty("provenance");
+    const noOriginFields = byId.get("tx-no-origin-fields");
+    expect(noOriginFields).toBeDefined();
+    expect(noOriginFields).not.toHaveProperty("provenance");
   });
 
   it("reports both imported payee names", async () => {
@@ -141,24 +148,23 @@ describe("search_transactions provenance", () => {
     );
   });
 
-  it("reports matched_transaction_id naming a transaction in the same result set", async () => {
+  it("reports matched_transaction_id verbatim", async () => {
     const byId = await searchAllById();
     const matchedId =
       byId.get("tx-direct-import")?.provenance?.matched_transaction_id;
 
-    expect(matchedId).toBe("tx-hand-entered");
-    expect(byId.has(matchedId as string)).toBe(true);
+    expect(matchedId).toBe(MATCHED_COUNTERPART_ID);
   });
 
   it("reports each transfer side's account and paired transaction, with the account name resolved", async () => {
     const byId = await searchAllById();
 
-    expect(byId.get("tx-transfer-out")?.provenance).toEqual({
+    expect(byId.get("tx-transfer-out")?.provenance).toStrictEqual({
       transfer_account_id: "acct-savings",
       transfer_account_name: "Savings",
       transfer_transaction_id: "tx-transfer-in",
     });
-    expect(byId.get("tx-transfer-in")?.provenance).toEqual({
+    expect(byId.get("tx-transfer-in")?.provenance).toStrictEqual({
       transfer_account_id: "acct-checking",
       transfer_account_name: "Checking",
       transfer_transaction_id: "tx-transfer-out",
@@ -203,7 +209,7 @@ describe("update_transactions provenance", () => {
     const updated = result.results[0];
     expect(updated.status).toBe("updated");
     expect(updated.transaction?.memo).toBe("Renamed memo");
-    expect(updated.transaction?.provenance).toEqual({
+    expect(updated.transaction?.provenance).toStrictEqual({
       transfer_account_id: "acct-savings",
       transfer_account_name: "Savings",
       transfer_transaction_id: "tx-transfer-in",

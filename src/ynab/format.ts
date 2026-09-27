@@ -150,14 +150,24 @@ export function snapshotScheduledTransaction(transaction: {
 
 /**
  * The fields YNAB uses to record how a transaction came to exist, exactly as
- * the API reports them. A transaction record carries all of them; a
- * subtransaction record only has the two transfer fields.
+ * the API reports them.
  */
 export interface ProvenanceSource {
   import_id?: string | null;
   import_payee_name?: string | null;
   import_payee_name_original?: string | null;
   matched_transaction_id?: string | null;
+  transfer_account_id?: string | null;
+  transfer_transaction_id?: string | null;
+}
+
+/**
+ * The subset of the above that YNAB defines on a subtransaction. Narrower than
+ * {@link ProvenanceSource} on purpose: YNAB's SubTransaction schema has the two
+ * transfer fields and no import or match fields, so declaring the wide type
+ * here would promise output that can never appear.
+ */
+export interface SubtransactionProvenanceSource {
   transfer_account_id?: string | null;
   transfer_transaction_id?: string | null;
 }
@@ -218,7 +228,7 @@ export function buildTransactionProvenance(
   return Object.keys(provenance).length > 0 ? provenance : undefined;
 }
 
-export interface SubtransactionLike extends ProvenanceSource {
+export interface SubtransactionLike extends SubtransactionProvenanceSource {
   id: string;
   amount: Milliunits;
   memo?: string | null;

@@ -116,6 +116,60 @@ describe("create_transactions", () => {
     expect(result.undo_history_ids).toEqual(["undo-1"]);
   });
 
+  it("reports provenance on a created transaction when YNAB returns origin fields", async () => {
+    ctx.ynabClient.getNameLookup.mockResolvedValue({
+      accountById: new Map([
+        ["acc-1", "Checking"],
+        ["acc-2", "Savings"],
+      ]),
+      categoryById: new Map(),
+      payeeById: new Map(),
+    });
+    const created = [
+      createMockTransaction({
+        id: "new-1",
+        amount: -50000,
+        transfer_account_id: "acc-2",
+        transfer_transaction_id: "new-1-other-side",
+      }),
+    ];
+    ctx.ynabClient.createTransactions.mockResolvedValue(created);
+    ctx.undoEngine.recordEntries.mockResolvedValue([{ id: "undo-1" }]);
+
+    const handler = tools.create_transactions;
+    const result = parseResult(
+      await handler({
+        transactions: [
+          { account_id: "acc-1", date: "2024-01-15", amount: -50 },
+        ],
+      }),
+    );
+
+    expect(result.transactions[0].provenance).toStrictEqual({
+      transfer_account_id: "acc-2",
+      transfer_account_name: "Savings",
+      transfer_transaction_id: "new-1-other-side",
+    });
+  });
+
+  it("omits provenance on a created transaction when YNAB returns no origin fields", async () => {
+    const created = [createMockTransaction({ id: "new-1", amount: -50000 })];
+    ctx.ynabClient.createTransactions.mockResolvedValue(created);
+    ctx.undoEngine.recordEntries.mockResolvedValue([{ id: "undo-1" }]);
+
+    const handler = tools.create_transactions;
+    const result = parseResult(
+      await handler({
+        transactions: [
+          { account_id: "acc-1", date: "2024-01-15", amount: -50 },
+        ],
+      }),
+    );
+
+    expect(result.transactions).toHaveLength(1);
+    expect(result.transactions[0]).not.toHaveProperty("provenance");
+  });
+
   it("builds undo entries with type 'delete' and correct entity_id", async () => {
     const created = [createMockTransaction({ id: "new-1", amount: -50000 })];
     ctx.ynabClient.createTransactions.mockResolvedValue(created);
