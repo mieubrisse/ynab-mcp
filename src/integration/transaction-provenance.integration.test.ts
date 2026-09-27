@@ -71,6 +71,20 @@ function seedProvenanceRecords(builder: FakeBudgetBuilder): void {
       category_id: "cat-groceries",
       import_id: API_IMPORT_ID,
     })
+    // Carries every origin field at once, so the description-coverage test can
+    // derive the full emitted field set from real output.
+    .withTransaction("tx-every-origin-field", {
+      account_id: "acct-checking",
+      amount: -1000,
+      date: IMPORT_DATE,
+      category_id: "cat-groceries",
+      import_id: YNAB_FORMAT_IMPORT_ID,
+      import_payee_name: "PAYEE AS IMPORTED",
+      import_payee_name_original: "PAYEE AS ON STATEMENT",
+      matched_transaction_id: MATCHED_COUNTERPART_ID,
+      transfer_account_id: "acct-savings",
+      transfer_transaction_id: "tx-transfer-in",
+    })
     // A record with none of the origin fields set. Naming it for that and
     // nothing more is the point: several different creation stories produce a
     // record with no origin fields, and none of them is readable from these
@@ -182,6 +196,24 @@ describe("search_transactions provenance", () => {
       const transaction = byId.get(id);
       expect(transaction).toBeDefined();
       expect(transaction).not.toHaveProperty("provenance");
+    }
+  });
+
+  it("documents every field it can emit, so a later field cannot go undocumented", async () => {
+    // The omission convention only works if the description lists what can
+    // appear. Nothing else couples the two, so this derives the field set from
+    // real output rather than from a hand-written list that would drift too.
+    const byId = await searchAllById();
+    const everyField = byId.get("tx-every-origin-field")?.provenance;
+    expect(everyField).toBeDefined();
+
+    const { tools } = await harness.client.listTools();
+    const description =
+      tools.find((tool) => tool.name === "search_transactions")?.description ??
+      "";
+
+    for (const field of Object.keys(everyField as object)) {
+      expect(description).toContain(field);
     }
   });
 

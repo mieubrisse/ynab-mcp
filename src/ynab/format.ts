@@ -162,10 +162,13 @@ export interface ProvenanceSource {
 }
 
 /**
- * The subset of the above that YNAB defines on a subtransaction. Narrower than
- * {@link ProvenanceSource} on purpose: YNAB's SubTransaction schema has the two
- * transfer fields and no import or match fields, so declaring the wide type
- * here would promise output that can never appear.
+ * The subset of the above that YNAB defines on a subtransaction: its
+ * SubTransaction schema has the two transfer fields and no import or match
+ * fields. Declaring that here documents what a subtransaction can actually
+ * carry; it does not enforce it, because {@link buildTransactionProvenance}
+ * still accepts the wide input and returns the wide output type. A
+ * subtransaction simply never has the other fields to pass through today, and
+ * would pass them through if YNAB ever added them.
  */
 export interface SubtransactionProvenanceSource {
   transfer_account_id?: string | null;
