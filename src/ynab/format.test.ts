@@ -552,7 +552,7 @@ describe("formatTransactionForOutput provenance", () => {
     expect(result).not.toHaveProperty("provenance");
   });
 
-  it("passes through a Direct Import import_id", () => {
+  it("passes through a YNAB-format import_id", () => {
     const tx = createMockTransaction({
       import_id: "YNAB:-50000:2024-01-15:1",
     });

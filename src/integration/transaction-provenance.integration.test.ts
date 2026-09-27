@@ -17,8 +17,11 @@ import { dateStr, seedStandardBudget } from "./seed.js";
 const TRANSFER_DATE = dateStr(0, 4);
 const IMPORT_DATE = dateStr(0, 5);
 
-/** Direct Import's documented import_id shape: YNAB:[milliunits]:[date]:[n]. */
-const DIRECT_IMPORT_ID = `YNAB:-42990:${IMPORT_DATE}:1`;
+/**
+ * The import_id shape YNAB documents for File Based Import and Direct Import
+ * alike: YNAB:[milliunits]:[date]:[n]. The shape does not distinguish the two.
+ */
+const YNAB_FORMAT_IMPORT_ID = `YNAB:-42990:${IMPORT_DATE}:1`;
 
 /** An import_id of the kind an API caller supplies — no required format. */
 const API_IMPORT_ID = "pluggy-a1b2c3d4e5";
@@ -50,17 +53,17 @@ function seedProvenanceRecords(builder: FakeBudgetBuilder): void {
     // An imported record carrying both imported payee names and a match. The
     // matched id deliberately names no seeded record: the server passes the
     // string through and makes no claim that it resolves to anything.
-    .withTransaction("tx-direct-import", {
+    .withTransaction("tx-ynab-format-import", {
       account_id: "acct-checking",
       amount: -42990,
       date: IMPORT_DATE,
       category_id: "cat-groceries",
-      import_id: DIRECT_IMPORT_ID,
+      import_id: YNAB_FORMAT_IMPORT_ID,
       import_payee_name: "GROCERY STORE 4412",
       import_payee_name_original: "SQ *GROCERY STORE 4412 CHICAGO IL",
       matched_transaction_id: MATCHED_COUNTERPART_ID,
     })
-    // An imported record whose import_id came from an API caller.
+    // An imported record whose import_id is of the kind an API caller sends.
     .withTransaction("tx-api-import", {
       account_id: "acct-checking",
       amount: -18500,
@@ -126,8 +129,8 @@ describe("search_transactions provenance", () => {
   it("reports import_id for an imported record and omits provenance for one with no origin fields", async () => {
     const byId = await searchAllById();
 
-    expect(byId.get("tx-direct-import")?.provenance?.import_id).toBe(
-      DIRECT_IMPORT_ID,
+    expect(byId.get("tx-ynab-format-import")?.provenance?.import_id).toBe(
+      YNAB_FORMAT_IMPORT_ID,
     );
     expect(byId.get("tx-api-import")?.provenance?.import_id).toBe(
       API_IMPORT_ID,
@@ -140,7 +143,7 @@ describe("search_transactions provenance", () => {
 
   it("reports both imported payee names", async () => {
     const byId = await searchAllById();
-    const provenance = byId.get("tx-direct-import")?.provenance;
+    const provenance = byId.get("tx-ynab-format-import")?.provenance;
 
     expect(provenance?.import_payee_name).toBe("GROCERY STORE 4412");
     expect(provenance?.import_payee_name_original).toBe(
@@ -150,8 +153,8 @@ describe("search_transactions provenance", () => {
 
   it("reports matched_transaction_id verbatim", async () => {
     const byId = await searchAllById();
-    const matchedId =
-      byId.get("tx-direct-import")?.provenance?.matched_transaction_id;
+    const matchedId = byId.get("tx-ynab-format-import")?.provenance
+      ?.matched_transaction_id;
 
     expect(matchedId).toBe(MATCHED_COUNTERPART_ID);
   });
