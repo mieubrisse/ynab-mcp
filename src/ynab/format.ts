@@ -148,7 +148,77 @@ export function snapshotScheduledTransaction(transaction: {
   };
 }
 
-export interface SubtransactionLike {
+/**
+ * The fields YNAB uses to record how a transaction came to exist, exactly as
+ * the API reports them. A transaction record carries all of them; a
+ * subtransaction record only has the two transfer fields.
+ */
+export interface ProvenanceSource {
+  import_id?: string | null;
+  import_payee_name?: string | null;
+  import_payee_name_original?: string | null;
+  matched_transaction_id?: string | null;
+  transfer_account_id?: string | null;
+  transfer_transaction_id?: string | null;
+}
+
+/**
+ * The same fields once shaped for output: only the ones YNAB reported are
+ * present. `transfer_account_name` is the sole addition, and it is the same
+ * {@link NameLookup} join this module already applies to `account_name` and
+ * `payee_name`.
+ */
+export interface TransactionProvenance {
+  import_id?: string;
+  import_payee_name?: string;
+  import_payee_name_original?: string;
+  matched_transaction_id?: string;
+  transfer_account_id?: string;
+  transfer_account_name?: string | null;
+  transfer_transaction_id?: string;
+}
+
+/**
+ * Collect whichever origin fields YNAB reported, or undefined when it
+ * reported none of them.
+ *
+ * Undefined rather than an object of nulls: callers spread the result, so a
+ * record with no origin metadata spends nothing on it. Every tool response
+ * here lands in an LLM context window, and six always-present null fields on
+ * every transaction in a 50-result search is a real cost. The flip side is
+ * that absence carries meaning, which the tool descriptions state.
+ */
+export function buildTransactionProvenance(
+  source: ProvenanceSource,
+  lookups: NameLookup,
+): TransactionProvenance | undefined {
+  const provenance: TransactionProvenance = {};
+
+  if (source.import_id != null) {
+    provenance.import_id = source.import_id;
+  }
+  if (source.import_payee_name != null) {
+    provenance.import_payee_name = source.import_payee_name;
+  }
+  if (source.import_payee_name_original != null) {
+    provenance.import_payee_name_original = source.import_payee_name_original;
+  }
+  if (source.matched_transaction_id != null) {
+    provenance.matched_transaction_id = source.matched_transaction_id;
+  }
+  if (source.transfer_account_id != null) {
+    provenance.transfer_account_id = source.transfer_account_id;
+    provenance.transfer_account_name =
+      lookups.accountById.get(source.transfer_account_id) ?? null;
+  }
+  if (source.transfer_transaction_id != null) {
+    provenance.transfer_transaction_id = source.transfer_transaction_id;
+  }
+
+  return Object.keys(provenance).length > 0 ? provenance : undefined;
+}
+
+export interface SubtransactionLike extends ProvenanceSource {
   id: string;
   amount: Milliunits;
   memo?: string | null;
@@ -160,7 +230,7 @@ export interface SubtransactionLike {
 }
 
 export function formatTransactionForOutput(
-  transaction: {
+  transaction: ProvenanceSource & {
     id: string;
     date: string;
     amount: Milliunits;
@@ -177,6 +247,7 @@ export function formatTransactionForOutput(
 ) {
   const subs = transaction.subtransactions?.filter((s) => !s.deleted) ?? [];
   const isSplit = subs.length > 0;
+  const provenance = buildTransactionProvenance(transaction, lookups);
 
   return {
     id: transaction.id,
@@ -203,11 +274,13 @@ export function formatTransactionForOutput(
     category_group_name: transaction.category_id
       ? (lookups.categoryById.get(transaction.category_id)?.group_name ?? null)
       : null,
+    ...(provenance && { provenance }),
     ...(isSplit && {
       subtransactions: subs.map((sub) => {
         const catInfo = sub.category_id
           ? lookups.categoryById.get(sub.category_id)
           : undefined;
+        const subProvenance = buildTransactionProvenance(sub, lookups);
         return {
           id: sub.id,
           amount: milliunitsToCurrency(sub.amount),
@@ -222,6 +295,7 @@ export function formatTransactionForOutput(
             : null,
           category_group_id: catInfo?.group_id ?? null,
           category_group_name: catInfo?.group_name ?? null,
+          ...(subProvenance && { provenance: subProvenance }),
         };
       }),
     }),

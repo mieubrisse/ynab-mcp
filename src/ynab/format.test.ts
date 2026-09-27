@@ -5,6 +5,7 @@ import {
   createMockNameLookup,
   createMockScheduledTransaction,
   createMockSplitTransaction,
+  createMockSubtransaction,
   createMockTransaction,
 } from "../test-utils.js";
 
@@ -530,6 +531,167 @@ describe("formatTransactionForOutput", () => {
       Record<string, unknown>
     >;
     expect(deletedSubs[0].id).toBe("sub-1");
+  });
+});
+
+describe("formatTransactionForOutput provenance", () => {
+  /** The lookup used throughout, with a second account to transfer to. */
+  function createLookupWithSavings() {
+    return createMockNameLookup({
+      accountById: new Map([
+        ["acc-1", "Checking"],
+        ["acc-2", "Savings"],
+      ]),
+    });
+  }
+
+  it("omits provenance when YNAB reports none of the origin fields", () => {
+    const tx = createMockTransaction();
+    const result = formatTransactionForOutput(tx, createMockNameLookup());
+
+    expect(result).not.toHaveProperty("provenance");
+  });
+
+  it("passes through a Direct Import import_id", () => {
+    const tx = createMockTransaction({
+      import_id: "YNAB:-50000:2024-01-15:1",
+    });
+    const result = formatTransactionForOutput(tx, createMockNameLookup());
+
+    expect(result.provenance).toEqual({
+      import_id: "YNAB:-50000:2024-01-15:1",
+    });
+  });
+
+  it("passes through an API-supplied import_id unchanged", () => {
+    const tx = createMockTransaction({
+      import_id: "pluggy-txn-8f2a1c",
+    });
+    const result = formatTransactionForOutput(tx, createMockNameLookup());
+
+    expect(result.provenance).toEqual({ import_id: "pluggy-txn-8f2a1c" });
+  });
+
+  it("passes through both imported payee names", () => {
+    const tx = createMockTransaction({
+      import_id: "YNAB:-50000:2024-01-15:1",
+      import_payee_name: "SUPERMARKET #442",
+      import_payee_name_original: "SQ *SUPERMARKET #442 SAO PAULO",
+    });
+    const result = formatTransactionForOutput(tx, createMockNameLookup());
+
+    expect(result.provenance).toEqual({
+      import_id: "YNAB:-50000:2024-01-15:1",
+      import_payee_name: "SUPERMARKET #442",
+      import_payee_name_original: "SQ *SUPERMARKET #442 SAO PAULO",
+    });
+  });
+
+  it("passes through matched_transaction_id", () => {
+    const tx = createMockTransaction({
+      matched_transaction_id: "tx-matched-9",
+    });
+    const result = formatTransactionForOutput(tx, createMockNameLookup());
+
+    expect(result.provenance).toEqual({
+      matched_transaction_id: "tx-matched-9",
+    });
+  });
+
+  it("passes through both transfer fields and resolves the transfer account name", () => {
+    const tx = createMockTransaction({
+      transfer_account_id: "acc-2",
+      transfer_transaction_id: "tx-other-side",
+    });
+    const result = formatTransactionForOutput(tx, createLookupWithSavings());
+
+    expect(result.provenance).toEqual({
+      transfer_account_id: "acc-2",
+      transfer_account_name: "Savings",
+      transfer_transaction_id: "tx-other-side",
+    });
+  });
+
+  it("returns a null transfer_account_name when the account lookup misses", () => {
+    const tx = createMockTransaction({
+      transfer_account_id: "acc-unknown",
+      transfer_transaction_id: "tx-other-side",
+    });
+    const result = formatTransactionForOutput(tx, createMockNameLookup());
+
+    expect(result.provenance).toEqual({
+      transfer_account_id: "acc-unknown",
+      transfer_account_name: null,
+      transfer_transaction_id: "tx-other-side",
+    });
+  });
+
+  it("includes only the fields YNAB reported, not the null ones", () => {
+    const tx = createMockTransaction({
+      import_id: "YNAB:-50000:2024-01-15:1",
+      import_payee_name: null,
+      import_payee_name_original: null,
+      matched_transaction_id: null,
+      transfer_account_id: null,
+      transfer_transaction_id: null,
+    });
+    const result = formatTransactionForOutput(tx, createMockNameLookup());
+
+    expect(Object.keys(result.provenance ?? {})).toEqual(["import_id"]);
+  });
+
+  it("carries every origin field at once when YNAB reports them all", () => {
+    const tx = createMockTransaction({
+      import_id: "YNAB:-50000:2024-01-15:1",
+      import_payee_name: "TRANSFER",
+      import_payee_name_original: "ONLINE TRANSFER TO SAVINGS",
+      matched_transaction_id: "tx-matched-9",
+      transfer_account_id: "acc-2",
+      transfer_transaction_id: "tx-other-side",
+    });
+    const result = formatTransactionForOutput(tx, createLookupWithSavings());
+
+    expect(result.provenance).toEqual({
+      import_id: "YNAB:-50000:2024-01-15:1",
+      import_payee_name: "TRANSFER",
+      import_payee_name_original: "ONLINE TRANSFER TO SAVINGS",
+      matched_transaction_id: "tx-matched-9",
+      transfer_account_id: "acc-2",
+      transfer_account_name: "Savings",
+      transfer_transaction_id: "tx-other-side",
+    });
+  });
+
+  it("gives a transferring subtransaction its own provenance", () => {
+    const tx = createMockSplitTransaction({
+      subtransactions: [
+        createMockSubtransaction({
+          id: "sub-1",
+          transaction_id: "tx-split",
+          amount: -30000,
+          category_id: "cat-1",
+          category_name: "Groceries",
+          transfer_account_id: "acc-2",
+          transfer_transaction_id: "tx-sub-other-side",
+        }),
+        createMockSubtransaction({
+          id: "sub-2",
+          transaction_id: "tx-split",
+          amount: -20000,
+          category_id: "cat-1",
+          category_name: "Groceries",
+        }),
+      ],
+    });
+    const result = formatTransactionForOutput(tx, createLookupWithSavings());
+
+    const subs = result.subtransactions as Array<Record<string, unknown>>;
+    expect(subs[0].provenance).toEqual({
+      transfer_account_id: "acc-2",
+      transfer_account_name: "Savings",
+      transfer_transaction_id: "tx-sub-other-side",
+    });
+    expect(subs[1]).not.toHaveProperty("provenance");
   });
 });
 
