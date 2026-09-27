@@ -271,11 +271,23 @@ export class FakeBudgetBuilder {
       memo?: string | null;
       cleared?: "cleared" | "uncleared" | "reconciled";
       approved?: boolean;
+      // YNAB's origin fields. Set independently and with no cross-referencing:
+      // the fake stores exactly what a test asks for, so a test can reproduce
+      // any field combination the live API emits without this builder having
+      // to model YNAB's rules for producing them.
+      transfer_account_id?: string | null;
+      transfer_transaction_id?: string | null;
+      matched_transaction_id?: string | null;
+      import_id?: string | null;
+      import_payee_name?: string | null;
+      import_payee_name_original?: string | null;
       subtransactions?: Array<{
         amount: number;
         category_id?: string | null;
         memo?: string | null;
         payee_id?: string | null;
+        transfer_account_id?: string | null;
+        transfer_transaction_id?: string | null;
       }>;
     },
   ): this {
@@ -295,8 +307,8 @@ export class FakeBudgetBuilder {
           this.planId,
           s.category_id ?? null,
         ),
-        transfer_account_id: null,
-        transfer_transaction_id: null,
+        transfer_account_id: s.transfer_account_id ?? null,
+        transfer_transaction_id: s.transfer_transaction_id ?? null,
         deleted: false,
       }),
     );
@@ -313,12 +325,12 @@ export class FakeBudgetBuilder {
       account_id: data.account_id,
       payee_id: data.payee_id ?? null,
       category_id: data.category_id ?? null,
-      transfer_account_id: null,
-      transfer_transaction_id: null,
-      matched_transaction_id: null,
-      import_id: null,
-      import_payee_name: null,
-      import_payee_name_original: null,
+      transfer_account_id: data.transfer_account_id ?? null,
+      transfer_transaction_id: data.transfer_transaction_id ?? null,
+      matched_transaction_id: data.matched_transaction_id ?? null,
+      import_id: data.import_id ?? null,
+      import_payee_name: data.import_payee_name ?? null,
+      import_payee_name_original: data.import_payee_name_original ?? null,
       debt_transaction_type: null,
       deleted: false,
       account_name: this.state.resolveAccountName(this.planId, data.account_id),

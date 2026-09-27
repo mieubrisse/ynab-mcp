@@ -1,0 +1,253 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { FakeBudgetBuilder } from "./fake-ynab/builder.js";
+import {
+  createIntegrationHarness,
+  type IntegrationHarness,
+} from "./harness.js";
+import { dateStr, seedStandardBudget } from "./seed.js";
+
+/**
+ * These tests check one thing: that the origin fields YNAB reports on a
+ * transaction survive the trip to a tool response. They deliberately do not
+ * assert anything about which combinations of those fields YNAB produces for a
+ * given real-world event — the fake's semantics are not YNAB's, so encoding a
+ * theory about that here would test the theory rather than the pass-through.
+ */
+
+const TRANSFER_DATE = dateStr(0, 4);
+const IMPORT_DATE = dateStr(0, 5);
+
+/**
+ * The import_id shape YNAB documents for File Based Import and Direct Import
+ * alike: YNAB:[milliunits]:[date]:[n]. The shape does not distinguish the two.
+ */
+const YNAB_FORMAT_IMPORT_ID = `YNAB:-42990:${IMPORT_DATE}:1`;
+
+/** An import_id of the kind an API caller supplies — no required format. */
+const API_IMPORT_ID = "pluggy-a1b2c3d4e5";
+
+/** Deliberately not the id of any seeded record. See the seed comment below. */
+const MATCHED_COUNTERPART_ID = "tx-matched-counterpart";
+
+function seedProvenanceRecords(builder: FakeBudgetBuilder): void {
+  seedStandardBudget(builder);
+
+  builder
+    // Two records pointing at each other's account and id.
+    .withTransaction("tx-transfer-out", {
+      account_id: "acct-checking",
+      amount: -250000,
+      date: TRANSFER_DATE,
+      memo: "Transfer to savings",
+      transfer_account_id: "acct-savings",
+      transfer_transaction_id: "tx-transfer-in",
+    })
+    .withTransaction("tx-transfer-in", {
+      account_id: "acct-savings",
+      amount: 250000,
+      date: TRANSFER_DATE,
+      memo: "Transfer from checking",
+      transfer_account_id: "acct-checking",
+      transfer_transaction_id: "tx-transfer-out",
+    })
+    // An imported record carrying both imported payee names and a match. The
+    // matched id deliberately names no seeded record: the server passes the
+    // string through and makes no claim that it resolves to anything.
+    .withTransaction("tx-ynab-format-import", {
+      account_id: "acct-checking",
+      amount: -42990,
+      date: IMPORT_DATE,
+      category_id: "cat-groceries",
+      import_id: YNAB_FORMAT_IMPORT_ID,
+      import_payee_name: "GROCERY STORE 4412",
+      import_payee_name_original: "SQ *GROCERY STORE 4412 CHICAGO IL",
+      matched_transaction_id: MATCHED_COUNTERPART_ID,
+    })
+    // An imported record whose import_id is of the kind an API caller sends.
+    .withTransaction("tx-api-import", {
+      account_id: "acct-checking",
+      amount: -18500,
+      date: IMPORT_DATE,
+      category_id: "cat-groceries",
+      import_id: API_IMPORT_ID,
+    })
+    // Carries every origin field at once, so the description-coverage test can
+    // derive the full emitted field set from real output.
+    .withTransaction("tx-every-origin-field", {
+      account_id: "acct-checking",
+      amount: -1000,
+      date: IMPORT_DATE,
+      category_id: "cat-groceries",
+      import_id: YNAB_FORMAT_IMPORT_ID,
+      import_payee_name: "PAYEE AS IMPORTED",
+      import_payee_name_original: "PAYEE AS ON STATEMENT",
+      matched_transaction_id: MATCHED_COUNTERPART_ID,
+      transfer_account_id: "acct-savings",
+      transfer_transaction_id: "tx-transfer-in",
+    })
+    // A record with none of the origin fields set. Naming it for that and
+    // nothing more is the point: several different creation stories produce a
+    // record with no origin fields, and none of them is readable from these
+    // fields alone.
+    .withTransaction("tx-no-origin-fields", {
+      account_id: "acct-checking",
+      amount: -42990,
+      date: IMPORT_DATE,
+      category_id: "cat-groceries",
+    });
+}
+
+interface ProvenanceShape {
+  import_id?: string;
+  import_payee_name?: string;
+  import_payee_name_original?: string;
+  matched_transaction_id?: string;
+  transfer_account_id?: string;
+  transfer_account_name?: string | null;
+  transfer_transaction_id?: string;
+}
+
+interface SearchResult {
+  result_sets: Array<{
+    transactions: Array<{
+      id: string;
+      memo: string | null;
+      account_name: string | null;
+      provenance?: ProvenanceShape;
+    }>;
+  }>;
+}
+
+let harness: IntegrationHarness;
+
+beforeEach(async () => {
+  harness = await createIntegrationHarness({ seed: seedProvenanceRecords });
+});
+
+afterEach(async () => {
+  await harness.close();
+});
+
+/** Every seeded transaction, keyed by id, as search_transactions returns it. */
+async function searchAllById(): Promise<
+  Map<string, SearchResult["result_sets"][number]["transactions"][number]>
+> {
+  const result = (await harness.callTool("search_transactions", {
+    queries: [{ limit: 500 }],
+  })) as SearchResult;
+
+  return new Map(result.result_sets[0].transactions.map((tx) => [tx.id, tx]));
+}
+
+describe("search_transactions provenance", () => {
+  it("reports import_id for an imported record and omits provenance for one with no origin fields", async () => {
+    const byId = await searchAllById();
+
+    expect(byId.get("tx-ynab-format-import")?.provenance?.import_id).toBe(
+      YNAB_FORMAT_IMPORT_ID,
+    );
+    expect(byId.get("tx-api-import")?.provenance?.import_id).toBe(
+      API_IMPORT_ID,
+    );
+
+    const noOriginFields = byId.get("tx-no-origin-fields");
+    expect(noOriginFields).toBeDefined();
+    expect(noOriginFields).not.toHaveProperty("provenance");
+  });
+
+  it("reports both imported payee names", async () => {
+    const byId = await searchAllById();
+    const provenance = byId.get("tx-ynab-format-import")?.provenance;
+
+    expect(provenance?.import_payee_name).toBe("GROCERY STORE 4412");
+    expect(provenance?.import_payee_name_original).toBe(
+      "SQ *GROCERY STORE 4412 CHICAGO IL",
+    );
+  });
+
+  it("reports matched_transaction_id verbatim", async () => {
+    const byId = await searchAllById();
+    const matchedId = byId.get("tx-ynab-format-import")?.provenance
+      ?.matched_transaction_id;
+
+    expect(matchedId).toBe(MATCHED_COUNTERPART_ID);
+  });
+
+  it("reports each transfer side's account and paired transaction, with the account name resolved", async () => {
+    const byId = await searchAllById();
+
+    expect(byId.get("tx-transfer-out")?.provenance).toStrictEqual({
+      transfer_account_id: "acct-savings",
+      transfer_account_name: "Savings",
+      transfer_transaction_id: "tx-transfer-in",
+    });
+    expect(byId.get("tx-transfer-in")?.provenance).toStrictEqual({
+      transfer_account_id: "acct-checking",
+      transfer_account_name: "Checking",
+      transfer_transaction_id: "tx-transfer-out",
+    });
+  });
+
+  it("leaves transactions seeded without origin fields free of a provenance key", async () => {
+    const byId = await searchAllById();
+    const seedStandardTransactionIds = ["tx-1", "tx-2", "tx-3"];
+
+    for (const id of seedStandardTransactionIds) {
+      const transaction = byId.get(id);
+      expect(transaction).toBeDefined();
+      expect(transaction).not.toHaveProperty("provenance");
+    }
+  });
+
+  it("documents every field it can emit, so a later field cannot go undocumented", async () => {
+    // The omission convention only works if the description lists what can
+    // appear. Nothing else couples the two, so this derives the field set from
+    // real output rather than from a hand-written list that would drift too.
+    const byId = await searchAllById();
+    const everyField = byId.get("tx-every-origin-field")?.provenance;
+    expect(everyField).toBeDefined();
+
+    const { tools } = await harness.client.listTools();
+    const description =
+      tools.find((tool) => tool.name === "search_transactions")?.description ??
+      "";
+
+    for (const field of Object.keys(everyField as object)) {
+      expect(description).toContain(field);
+    }
+  });
+
+  it("documents the omission convention in the tool description", async () => {
+    const { tools } = await harness.client.listTools();
+    const search = tools.find((tool) => tool.name === "search_transactions");
+
+    // Absence of the key is only readable as "YNAB reported none of these"
+    // if the description says so, so the description is part of the contract.
+    expect(search?.description).toContain("provenance");
+    expect(search?.description).toContain("omitted entirely");
+  });
+});
+
+describe("update_transactions provenance", () => {
+  it("still reports provenance on the record it returns after an update", async () => {
+    const result = (await harness.callTool("update_transactions", {
+      transactions: [
+        { transaction_id: "tx-transfer-out", memo: "Renamed memo" },
+      ],
+    })) as {
+      results: Array<{
+        status: string;
+        transaction?: { memo: string | null; provenance?: ProvenanceShape };
+      }>;
+    };
+
+    const updated = result.results[0];
+    expect(updated.status).toBe("updated");
+    expect(updated.transaction?.memo).toBe("Renamed memo");
+    expect(updated.transaction?.provenance).toStrictEqual({
+      transfer_account_id: "acct-savings",
+      transfer_account_name: "Savings",
+      transfer_transaction_id: "tx-transfer-in",
+    });
+  });
+});

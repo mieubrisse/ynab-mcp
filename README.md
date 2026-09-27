@@ -191,6 +191,8 @@ Knowledge base resources for YNAB methodology. Workflow prompts reference these 
 
 **Currency units** — All monetary amounts in tool inputs and outputs use standard currency units (e.g., `12.50`), not YNAB's native milliunits. Most tools also echo a top-level `currency` ISO code; `get_spending_analysis` additionally reports raw `*_milliunits` totals alongside them.
 
+**Transaction provenance** — Transactions returned by `search_transactions`, `create_transactions`, and `update_transactions` carry a `provenance` object holding whichever of YNAB's origin fields it reported for that transaction: `import_id`, `import_payee_name`, `import_payee_name_original`, `matched_transaction_id`, `transfer_account_id`, and `transfer_transaction_id` (plus `transfer_account_name`, this server's name lookup rather than a YNAB field). Only the fields YNAB reported are present, and the object is omitted entirely when it reported none of them — so a transaction with no `provenance` key has all of them null. Subtransactions carry the same object with the two transfer fields. These are passed through as YNAB returns them; the server does not interpret them.
+
 **`budget_id`** — Most tools accept an optional `budget_id`. Omit it or pass `"last-used"` to target the most recently accessed budget.
 
 **Undo** — Every write operation records an undo entry. Use `list_undo_history` and `undo_operations` to review or revert changes. The most recent 2000 entries per budget are kept (tunable via `YNAB_UNDO_HISTORY_LIMIT`). History lives in memory only, so it is scoped to a single server process and does not survive a restart.

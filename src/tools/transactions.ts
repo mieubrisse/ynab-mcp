@@ -207,6 +207,40 @@ const deleteTransactionsSchema = z.object({
   transaction_ids: z.array(z.string()).min(1).max(100),
 });
 
+/**
+ * Appended to the description of every tool that returns transaction records,
+ * so an agent reading a response knows that a missing `provenance` key means
+ * "YNAB reported none of these fields" rather than "this server drops them".
+ *
+ * Field wording is YNAB's own, from the transaction schema in its OpenAPI
+ * spec. Deliberately descriptive only: it says what each field is, never what
+ * a given combination of them implies about how a record was created.
+ */
+const PROVENANCE_OUTPUT_NOTE =
+  "Returned transactions carry a `provenance` object holding whichever of " +
+  "YNAB's origin fields it reported for that transaction. The object is " +
+  "omitted entirely when YNAB reported none of them, so its absence means " +
+  "every one of these is null. As YNAB defines them: `import_id` — if the " +
+  "transaction was imported, a unique (by account) import identifier; a " +
+  "transaction imported through File Based Import or Direct Import rather " +
+  "than through the API has the format " +
+  "'YNAB:[milliunit_amount]:[iso_date]:[occurrence]', whereas one imported " +
+  "through the API carries whatever import_id the API caller sent. " +
+  "`import_payee_name` — if imported, the payee name used when importing, " +
+  "before any payee rename rules were applied. `import_payee_name_original` " +
+  "— if imported, the original payee name as it appeared on the statement. " +
+  "`matched_transaction_id` — if the transaction is matched, the id of the " +
+  "matched transaction. `transfer_account_id` — if a transfer transaction, " +
+  "the account to which it transfers (`transfer_account_name` beside it is " +
+  "this server's name lookup, not a YNAB field). `transfer_transaction_id` " +
+  "— if a transfer transaction, the id of the transaction on the other side " +
+  "of the transfer. Subtransactions carry the same object, with the two " +
+  "transfer fields.";
+
+const PROVENANCE_POINTER_NOTE =
+  "Returned transactions carry the same `provenance` object documented on " +
+  "search_transactions.";
+
 export function registerTransactionTools(
   server: McpServer,
   context: AppContext,
@@ -216,7 +250,8 @@ export function registerTransactionTools(
     {
       title: "Search Transactions",
       description:
-        "Run one or more transaction searches in a single call with rich filters and sorted results.",
+        "Run one or more transaction searches in a single call with rich filters and sorted results. " +
+        PROVENANCE_OUTPUT_NOTE,
       annotations: {
         readOnlyHint: true,
         idempotentHint: true,
@@ -268,7 +303,8 @@ export function registerTransactionTools(
     {
       title: "Create Transactions",
       description:
-        "Create one or more transactions in a single call. Each successful creation is undoable.",
+        "Create one or more transactions in a single call. Each successful creation is undoable. " +
+        PROVENANCE_POINTER_NOTE,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -360,7 +396,8 @@ export function registerTransactionTools(
     {
       title: "Update Transactions",
       description:
-        "Update one or more existing transactions in a single call. Each successful update is undoable.",
+        "Update one or more existing transactions in a single call. Each successful update is undoable. " +
+        PROVENANCE_POINTER_NOTE,
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
